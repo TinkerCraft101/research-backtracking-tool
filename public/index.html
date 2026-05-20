@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Research Backtracking Tool — Drop a research paper and visualize its citation tree">
+    <title>Research Backtracker</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/public/styles.css">
+</head>
+<body>
+    <!-- ── Upload Screen ── -->
+    <div id="upload-screen" class="screen active">
+        <div class="upload-area">
+            <div class="upload-circle" id="upload-circle">
+                <input type="file" id="file-input" accept=".pdf" hidden>
+                <div class="plus-icon">
+                    <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
+                        <line x1="24" y1="8" x2="24" y2="40" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+                        <line x1="8" y1="24" x2="40" y2="24" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+                    </svg>
+                </div>
+                <p class="upload-hint">Drop a research paper here<br><span>or click to browse</span></p>
+            </div>
+        </div>
+        <h1 class="app-title">Research Backtracker</h1>
+        <p class="app-subtitle">Visualize citation trees from any research paper</p>
+    </div>
+
+    <!-- ── Processing Screen ── -->
+    <div id="processing-screen" class="screen">
+        <div class="processing-container">
+            <div class="processing-header">
+                <h2 id="processing-title">Processing Paper...</h2>
+            </div>
+            <div class="progress-track">
+                <div class="progress-fill" id="progress-fill"></div>
+            </div>
+            <p class="progress-stats" id="progress-stats">0 / 0</p>
+            <p class="progress-message" id="progress-message">Initializing...</p>
+            <div class="processing-dots">
+                <span></span><span></span><span></span>
+            </div>
+        </div>
+    </div>
+
+    <!-- ── Tree Screen ── -->
+    <div id="tree-screen" class="screen">
+        <div class="tree-header">
+            <button class="back-btn" id="back-btn">
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                    <path d="M12 4L6 10L12 16" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                New Paper
+            </button>
+            <div class="tree-stats" id="tree-stats"></div>
+        </div>
+        <div class="tree-container" id="tree-container"></div>
+    </div>
+
+    <!-- ── PDF Viewer Overlay ── -->
+    <div id="pdf-overlay" class="pdf-overlay">
+        <div class="pdf-panel" id="pdf-panel">
+            <div class="pdf-toolbar">
+                <button class="pdf-close-btn" id="pdf-close-btn">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                        <line x1="6" y1="6" x2="18" y2="18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        <line x1="18" y1="6" x2="6" y2="18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                    </svg>
+                </button>
+                <span class="pdf-title" id="pdf-title"></span>
+                <div class="pdf-nav">
+                    <button class="pdf-nav-btn" id="pdf-prev">‹</button>
+                    <span class="pdf-page-info" id="pdf-page-info">1 / 1</span>
+                    <button class="pdf-nav-btn" id="pdf-next">›</button>
+                </div>
+            </div>
+            <div class="pdf-canvas-wrapper" id="pdf-canvas-wrapper">
+                <canvas id="pdf-canvas"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="/public/app.js"></script>
+</body>
+</html>
