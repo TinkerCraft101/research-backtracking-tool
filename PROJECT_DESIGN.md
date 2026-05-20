@@ -4,45 +4,49 @@
 A web application that parses research papers, extracts references, downloads available PDFs, and visualizes the citation tree with an embedded PDF viewer.
 
 ## Core Features (v0.0.1)
-1. **PDF Upload**: Drag-and-drop or click-to-upload research papers
-2. **Reference Extraction**: Parse PDF text and extract citation titles
-3. **Paper Search & Download**: Search references via Semantic Scholar API, download open-access PDFs
-4. **Tree Visualization**: Root paper → reference child nodes (1 level deep, max 20 references)
-5. **PDF Viewer**: Click a node → it animates/expands into a PDF viewer
+1. **PDF Upload**: Dashed-border circle with `+` icon — drag-and-drop or click-to-browse
+2. **Reference Extraction**: Parse PDF text via PyMuPDF, regex-extract citation titles (max 20)
+3. **Paper Search & Download**: Search via Semantic Scholar API, download open-access PDFs
+4. **Tree Visualization**: Root paper → reference child nodes (1 level deep)
+5. **PDF Viewer**: Click available node → animates/expands into embedded PDF viewer
+6. **Paywall Handling**: Paywalled papers shown as dimmed nodes, hover reveals "View on Web" link
 
 ## Architecture
 
 ```
-┌─────────────────────┐       REST API        ┌──────────────────────┐
-│   Frontend (Static) │ ◄──────────────────► │   Backend (Server)    │
-│   HTML/CSS/JS       │                       │   PDF Parsing         │
-│   Tree Viz          │                       │   Semantic Scholar    │
-│   pdf.js Viewer     │                       │   PDF Downloads       │
-└─────────────────────┘                       └──────────────────────┘
-                                                        │
-                                                        ▼
-                                              ┌──────────────────────┐
-                                              │  library/<paper>/    │
-                                              │  Downloaded PDFs     │
-                                              └──────────────────────┘
+┌──────────────────────┐       REST API       ┌──────────────────────┐
+│   Frontend (Static)  │ ◄──────────────────► │ Backend (FastAPI)     │
+│   HTML/CSS/JS        │                      │ PyMuPDF parsing       │
+│   Tree Visualization │                      │ Semantic Scholar API  │
+│   pdf.js Viewer      │                      │ PDF Downloads         │
+└──────────────────────┘                      └──────────────────────┘
+                                                       │
+                                                       ▼
+                                             ┌──────────────────────┐
+                                             │  library/<paper>/    │
+                                             │  Downloaded PDFs     │
+                                             └──────────────────────┘
 ```
 
-## Storage
-- `library/<sanitized_paper_name>/` — downloaded reference PDFs + original upload
-- No database in v0.0.1 (filesystem-based)
-
-## Future Plans
-- v0.1.0: AI-powered features (summarization, relevance scoring, etc.)
-- v0.2.0: Supabase database integration
-- Deeper citation tree traversal (multi-level)
-
 ## Tech Stack
-- **Frontend**: Vanilla HTML, CSS, JavaScript
-- **PDF Viewer**: pdf.js (pdfjs-dist)
+- **Backend**: Python (FastAPI) + uvicorn
+- **PDF Parsing**: PyMuPDF (fitz)
+- **HTTP Client**: httpx (async)
 - **Paper Search**: Semantic Scholar API (free, no key)
-- **Backend**: TBD (see design iteration notes)
+- **Frontend**: Vanilla HTML, CSS, JavaScript
+- **PDF Viewer**: pdf.js (pdfjs-dist via CDN)
 
-## Design Constraints
-- Max 20 references processed per paper
-- Rate-limited API calls (1 req/sec to Semantic Scholar)
-- Only open-access PDFs can be downloaded; paywalled papers show dimmed with link-out
+## Design Decisions
+- **Python backend** chosen over Node.js to future-proof for AI features (v0.1.0+)
+- **Semantic Scholar** over web crawling (reliable, structured, free)
+- **Max 20 references** per paper to respect API rate limits
+- **No database** in v0.0.1 — filesystem-based storage
+- **Real-time progress feedback** during reference processing
+
+## Storage
+- `library/<sanitized_paper_name>/` — original upload + downloaded reference PDFs
+
+## Future Roadmap
+- v0.1.0: AI-powered features (summarization, relevance scoring)
+- v0.2.0: Supabase database integration
+- v0.3.0: Multi-level citation tree traversal
