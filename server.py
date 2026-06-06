@@ -1,7 +1,7 @@
 """
 Research Backtracking Tool - FastAPI Backend
-Parses research papers, extracts references, searches Semantic Scholar,
-downloads open-access PDFs, and serves tree data to the frontend.
+Parses research papers, extracts references, searches multiple sources,
+downloads open-access PDFs, recursively builds citation tree.
 """
 
 import os
@@ -10,12 +10,13 @@ import json
 import asyncio
 import hashlib
 import unicodedata
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from datetime import datetime
 
-import fitz  # PyMuPDF
+import fitz
 import httpx
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,16 +32,17 @@ app.add_middleware(
 )
 
 LIBRARY_DIR = Path("library")
-LIBRARY_DIR.mkdir(exist_ok=True)
+ROOT_DIR = LIBRARY_DIR / "root"
+BRANCH_DIR = LIBRARY_DIR / "branch"
+ROOT_DIR.mkdir(parents=True, exist_ok=True)
+BRANCH_DIR.mkdir(parents=True, exist_ok=True)
 
-# In-memory job storage
 jobs = {}
 
 
 # ─── Utility Functions ───────────────────────────────────────────────
 
 def sanitize_filename(name: str) -> str:
-    """Sanitize a string to be used as a folder/file name."""
     name = unicodedata.normalize('NFKD', name).encode('ascii', 'ignore').decode()
     name = re.sub(r'[^\w\s-]', '_', name)
     name = re.sub(r'\s+', '_', name)
@@ -49,7 +51,6 @@ def sanitize_filename(name: str) -> str:
 
 
 def extract_text_from_pdf(pdf_path: str) -> str:
-    """Extract text from PDF using PyMuPDF."""
     doc = fitz.open(pdf_path)
     text = ""
     for page in doc:
@@ -59,7 +60,6 @@ def extract_text_from_pdf(pdf_path: str) -> str:
 
 
 def extract_paper_title(text: str) -> str:
-    """Extract the title from the first page text (heuristic)."""
     lines = text.split('\n')
     title_lines = []
     for line in lines[:20]:
@@ -76,8 +76,6 @@ def extract_paper_title(text: str) -> str:
 # ─── Reference Extraction ────────────────────────────────────────────
 
 def extract_references(text: str) -> list[str]:
-    """Extract reference titles from the paper text. Max 20."""
-    # Find the References/Bibliography section
     ref_match = re.search(
         r'(?:^|\n)\s*(?:References|Bibliography|REFERENCES|BIBLIOGRAPHY)\s*\n',
         text
@@ -87,21 +85,17 @@ def extract_references(text: str) -> list[str]:
 
     ref_text = text[ref_match.end():]
 
-    # Strategy 1: Numbered [1], [2], ...
     refs = re.split(r'\n\s*\[\d+\]\s*', ref_text)
     refs = [r.strip() for r in refs if len(r.strip()) > 20]
 
-    # Strategy 2: Numbered 1. 2. ...
     if not refs:
         refs = re.split(r'\n\s*\d+\.\s+', ref_text)
         refs = [r.strip() for r in refs if len(r.strip()) > 20]
 
-    # Strategy 3: Paragraph-based
     if not refs:
         refs = re.split(r'\n\s*\n', ref_text)
         refs = [r.strip() for r in refs if len(r.strip()) > 20]
 
-    # Extract titles from each reference string
     titles = []
     for ref in refs[:20]:
         title = _extract_title_from_ref(ref)
@@ -112,34 +106,59 @@ def extract_references(text: str) -> list[str]:
 
 
 def _extract_title_from_ref(ref: str) -> str:
-    """Extract the title from a single reference string."""
     ref = ref.replace('\n', ' ').strip()
 
-    # Try quoted title: "Title" or \u201cTitle\u201d
+    # Quoted title: "Title" or \u201cTitle\u201d
     quoted = re.search(r'["\u201c](.+?)["\u201d]', ref)
     if quoted and len(quoted.group(1)) > 10:
         return quoted.group(1).strip()
 
-    # Try APA style: (Year). Title.
-    apa = re.search(r'\(\d{4}\)\.\s*(.+?)\.', ref)
-    if apa and len(apa.group(1)) > 10:
-        return apa.group(1).strip()
+    # Remove leading numbering like [1], 1., (1)
+    ref = re.sub(r'^\[?\d+\]?[.\s)]*', '', ref).strip()
 
-    # Try after year: 2020. Title ... or 2020, Title ...
-    year_match = re.search(r'(?:19|20)\d{2}[a-z]?\b[.,)]*\s*(.+?)(?:\.|$)', ref)
-    if year_match and len(year_match.group(1)) > 10:
-        candidate = re.sub(r'^[.,;:\s]+', '', year_match.group(1))
-        if len(candidate) > 10:
-            return candidate
+    # APA: (Year). Title.
+    m = re.search(r'\((\d{4})[a-z]?\)[.\s]+(.+?)(?:\.\s|$)', ref)
+    if m and len(m.group(2)) > 10:
+        t = re.sub(r'^["\u201c]|["\u201d]+$', '', m.group(2)).strip()
+        return t
 
-    # Fallback: first 100 chars as search query
-    return ref[:100].strip()
+    # IEEE: author, "Title", in Proc/Journal, vol, year.
+    m = re.search(r'["\u201c](.+?)["\u201d]', ref)
+    if m and len(m.group(1)) > 10:
+        return m.group(1).strip()
+
+    # Year-based: Title (Year) or Title. Year
+    m = re.search(r'([A-Z][A-Za-z0-9\s:;,.!?]{15,120})\.?\s*\(?(?:19|20)\d{2}\)?', ref)
+    if m and len(m.group(1)) > 10:
+        return m.group(1).strip()
+
+    # After year: (2020). Title. or (2020, Title)
+    m = re.search(r'(?:19|20)\d{2}[a-z]?\b[.,)]*\s+(.+?)(?:\.\s[A-Z]|$)', ref)
+    if m and len(m.group(1)) > 10:
+        return re.sub(r'^[.,;:\s]+', '', m.group(1)).strip()
+
+    # Sentence starting after author names: "... Author. Title."
+    m = re.search(r'\.\s+([A-Z][A-Za-z0-9\s:;,]{15,120})', ref)
+    if m and len(m.group(1)) > 10:
+        return m.group(1).strip()
+
+    # Fallback: remove leading author list (up to last comma before a phrase starting with uppercase)
+    # Try to split on " and " then take last part, or after last period
+    parts = re.split(r'\.\s+', ref)
+    if len(parts) >= 2:
+        best = max(parts, key=len).strip()
+        if len(best) > 15:
+            return best[:200].strip()
+
+    return ref[:200].strip()
 
 
-# ─── Semantic Scholar Integration ─────────────────────────────────────
+# ─── Multi-Source Search ─────────────────────────────────────────────
+
+ARXIV_NS = {"atom": "http://www.w3.org/2005/Atom"}
+
 
 async def search_semantic_scholar(title: str, client: httpx.AsyncClient) -> dict | None:
-    """Search Semantic Scholar for a paper by title."""
     try:
         resp = await client.get(
             "https://api.semanticscholar.org/graph/v1/paper/search",
@@ -162,8 +181,123 @@ async def search_semantic_scholar(title: str, client: httpx.AsyncClient) -> dict
         return None
 
 
+async def search_arxiv(title: str, client: httpx.AsyncClient) -> dict | None:
+    try:
+        resp = await client.get(
+            "https://export.arxiv.org/api/query",
+            params={"search_query": f'all:"{title[:200]}"', "max_results": 1},
+            timeout=15.0,
+        )
+        if resp.status_code != 200:
+            return None
+
+        root = ET.fromstring(resp.text)
+        entry = root.find("atom:entry", ARXIV_NS)
+        if entry is None:
+            return None
+
+        title_el = entry.find("atom:title", ARXIV_NS)
+        paper_title = title_el.text.strip() if title_el is not None and title_el.text else title
+        # arXiv titles often have newlines
+        paper_title = re.sub(r'\s+', ' ', paper_title)
+
+        id_el = entry.find("atom:id", ARXIV_NS)
+        paper_url = id_el.text.strip() if id_el is not None and id_el.text else None
+
+        pdf_link = None
+        for link in entry.findall("atom:link", ARXIV_NS):
+            if link.get("title") == "pdf":
+                pdf_link = link.get("href")
+                break
+        if not pdf_link:
+            for link in entry.findall("atom:link", ARXIV_NS):
+                if link.get("type") == "application/pdf":
+                    pdf_link = link.get("href")
+                    break
+
+        return {
+            "title": paper_title,
+            "openAccessPdf": {"url": pdf_link} if pdf_link else None,
+            "url": paper_url,
+        }
+    except Exception:
+        return None
+
+
+def _generate_queries(title: str) -> list[str]:
+    """Generate multiple search queries from a raw title string, best first."""
+    queries = [title.strip()]
+    t = title.strip()
+
+    # Remove leading numbering/authors
+    cleaned = re.sub(r'^\[?\d+\]?[.\s)]*', '', t).strip()
+    cleaned = re.sub(r'^[A-Z][a-z]+,\s*[A-Z][a-z]+.*?,\s+', '', cleaned).strip()
+    if cleaned != t and len(cleaned) > 10:
+        queries.append(cleaned)
+
+    # Try quoted substring
+    m = re.search(r'["\u201c](.{15,})["\u201d]', t)
+    if m:
+        queries.append(m.group(1).strip())
+
+    # Try after year
+    m = re.search(r'(?:19|20)\d{2}[.,\s]+(.{15,})', t)
+    if m:
+        queries.append(m.group(1).strip())
+
+    # First sentence after a period
+    m = re.search(r'\.\s+([A-Z][^.]{15,})', t)
+    if m:
+        queries.append(m.group(1).strip())
+
+    # Shorten long queries: first 80 chars
+    if len(t) > 80:
+        queries.append(t[:80].strip())
+
+    # Title-case part
+    m = re.search(r'([A-Z][A-Za-z0-9\s:;,]{20,60})', t)
+    if m and len(m.group(1)) > 15:
+        queries.append(m.group(1).strip())
+
+    return list(dict.fromkeys(q for q in queries if len(q) > 15))
+
+
+async def search_paper(title: str, client: httpx.AsyncClient) -> dict:
+    """Search across multiple sources with query retry."""
+    queries = _generate_queries(title)
+
+    for q in queries:
+        # Try Semantic Scholar
+        result = await search_semantic_scholar(q, client)
+        if result and not result.get("rate_limited"):
+            return {
+                "title": result.get("title", title),
+                "authors": [a.get("name", "") for a in (result.get("authors") or [])[:3]],
+                "year": result.get("year"),
+                "paper_url": result.get("url", ""),
+                "openAccessPdf": result.get("openAccessPdf"),
+            }
+        if result and result.get("rate_limited"):
+            continue  # try next query
+
+    # Try arXiv with best query
+    best_q = next((q for q in queries if len(q) < 200), title[:200])
+    result = await search_arxiv(best_q, client)
+    if result and result.get("openAccessPdf"):
+        return {
+            "title": result.get("title", title),
+            "authors": [],
+            "year": None,
+            "paper_url": result.get("url", ""),
+            "openAccessPdf": result.get("openAccessPdf"),
+        }
+
+    return {"title": title, "not_found": True}
+
+
+# ─── PDF Download ─────────────────────────────────────────────────────
+
 async def download_pdf(url: str, save_path: str, client: httpx.AsyncClient) -> bool:
-    """Download a PDF from a URL."""
     try:
         resp = await client.get(url, follow_redirects=True, timeout=30.0)
         if resp.status_code == 200 and len(resp.content) > 1000:
@@ -175,103 +309,195 @@ async def download_pdf(url: str, save_path: str, client: httpx.AsyncClient) -> b
         return False
 
 
-# ─── Background Processing ────────────────────────────────────────────
+# ─── Recursive Processing ─────────────────────────────────────────────
 
-async def process_references(job_id: str):
-    """Background task: search and download each reference."""
+async def process_node(
+    job_id: str,
+    ref_titles: list[str],
+    depth: int,
+    max_depth: int,
+    root_name: str,
+    client: httpx.AsyncClient,
+) -> list[dict]:
+    """Recursively process references at a given depth level."""
     job = jobs[job_id]
-    folder_path = LIBRARY_DIR / job["folder_name"]
+    children = []
+
+    for i, ref_title in enumerate(ref_titles):
+        if job["status"] == "cancelled":
+            return children
+
+        job["current"] += 1
+        job["message"] = f"Searching (depth {depth}): {ref_title[:60]}..."
+
+        # Search across multiple sources
+        paper = await search_paper(ref_title, client)
+
+        if paper.get("not_found"):
+            children.append({
+                "title": ref_title,
+                "authors": [],
+                "year": None,
+                "filename": None,
+                "folder": None,
+                "paper_url": None,
+                "status": "not_found",
+                "children": [],
+            })
+            await asyncio.sleep(0.5)
+            continue
+
+        child = {
+            "title": paper["title"],
+            "authors": paper.get("authors", []),
+            "year": paper.get("year"),
+            "filename": None,
+            "folder": None,
+            "paper_url": paper.get("paper_url", ""),
+            "status": "found",
+            "children": [],
+        }
+
+        # Try to download PDF
+        oa = paper.get("openAccessPdf")
+        if oa and oa.get("url"):
+            pdf_name = sanitize_filename(paper.get("title", f"ref_{i+1}")) + ".pdf"
+
+            # Depth 1 = branch level, stored in branch/{root_name}/
+            # Depth >= 2 = leaf level, stored in branch/{root_name}/{parent}/
+            save_dir = BRANCH_DIR / root_name
+            if depth >= 2:
+                parent_name = sanitize_filename(paper.get("title", "unknown"))
+                save_dir = save_dir / parent_name
+            save_dir.mkdir(parents=True, exist_ok=True)
+            save_path = save_dir / pdf_name
+
+            job["message"] = f"Downloading (depth {depth}): {paper['title'][:60]}..."
+            if await download_pdf(oa["url"], str(save_path), client):
+                child["filename"] = pdf_name
+                child["folder"] = str(save_dir.relative_to(LIBRARY_DIR))
+                child["status"] = "downloaded"
+
+                # Recurse into this paper's references
+                if depth < max_depth:
+                    try:
+                        text = extract_text_from_pdf(str(save_path))
+                        sub_refs = extract_references(text)
+                        if sub_refs:
+                            sub_children = await process_node(
+                                job_id, sub_refs, depth + 1, max_depth,
+                                root_name, client
+                            )
+                            child["children"] = sub_children
+                    except Exception as e:
+                        pass
+        else:
+            child["status"] = "paywalled" if paper.get("paper_url") else "not_found"
+
+        children.append(child)
+        await asyncio.sleep(0.8)
+
+    return children
+
+
+# ─── Background Job ───────────────────────────────────────────────────
+
+async def run_job(job_id: str, pdf_path: str, max_depth: int):
+    """Background task: build the full citation tree."""
+    job = jobs[job_id]
+
+    try:
+        text = extract_text_from_pdf(pdf_path)
+        title = extract_paper_title(text)
+        references = extract_references(text)
+    except Exception as e:
+        job["status"] = "error"
+        job["message"] = f"Failed to parse PDF: {str(e)}"
+        return
+
+    job["paper_title"] = title
+    job["references_raw"] = references
+    job["current"] = 0
+    job["total"] = len(references)
+    job["message"] = f"Found {len(references)} references, starting search..."
+
+    root_name = sanitize_filename(title)
+
+    # Move uploaded file to library/root/{root_name}/
+    root_save_dir = ROOT_DIR / root_name
+    root_save_dir.mkdir(parents=True, exist_ok=True)
+    root_pdf_path = root_save_dir / f"{root_name}.pdf"
+    os.replace(pdf_path, str(root_pdf_path))
+
+    if not references:
+        job["status"] = "done"
+        job["message"] = "No references found in this paper."
+        job["tree_data"] = {
+            "root": {
+                "title": title,
+                "filename": f"{root_name}.pdf",
+                "folder": str(root_save_dir.relative_to(LIBRARY_DIR)),
+                "children": [],
+            }
+        }
+        return
 
     async with httpx.AsyncClient() as client:
-        for i, ref_title in enumerate(job["references_raw"]):
-            job["current"] = i + 1
-            job["message"] = f"Searching reference {i+1}/{job['total']}: {ref_title[:50]}..."
+        children = await process_node(
+            job_id, references, depth=1, max_depth=max_depth,
+            root_name=root_name, client=client
+        )
 
-            result = await search_semantic_scholar(ref_title, client)
-
-            # Handle rate limiting with retry
-            if result and result.get("rate_limited"):
-                job["message"] = f"Rate limited — waiting 5s before retrying ({i+1}/{job['total']})..."
-                await asyncio.sleep(5)
-                result = await search_semantic_scholar(ref_title, client)
-
-            if result and not result.get("rate_limited"):
-                paper = {
-                    "title": result.get("title", ref_title),
-                    "authors": [a.get("name", "") for a in (result.get("authors") or [])[:3]],
-                    "year": result.get("year"),
-                    "downloaded": False,
-                    "filename": None,
-                    "paper_url": result.get("url", ""),
-                    "status": "found",
-                }
-
-                # Try to download open-access PDF
-                oa = result.get("openAccessPdf")
-                if oa and oa.get("url"):
-                    pdf_name = sanitize_filename(result.get("title", f"ref_{i+1}")) + ".pdf"
-                    save_path = folder_path / pdf_name
-                    job["message"] = f"Downloading {i+1}/{job['total']}: {result.get('title','')[:50]}..."
-
-                    if await download_pdf(oa["url"], str(save_path), client):
-                        paper["downloaded"] = True
-                        paper["filename"] = pdf_name
-                        paper["status"] = "downloaded"
-                    else:
-                        paper["status"] = "download_failed"
-                else:
-                    paper["status"] = "paywalled"
-
-                job["references_processed"].append(paper)
-            else:
-                job["references_processed"].append({
-                    "title": ref_title,
-                    "authors": [],
-                    "year": None,
-                    "downloaded": False,
-                    "filename": None,
-                    "paper_url": None,
-                    "status": "not_found",
-                })
-
-            # Respect rate limits
-            await asyncio.sleep(1)
-
-    # Build final tree data
-    dl = sum(1 for r in job["references_processed"] if r["downloaded"])
-    pw = sum(1 for r in job["references_processed"] if r["status"] in (
-        "paywalled", "not_found", "rate_limited", "download_failed"
-    ))
+    dl_count = sum(1 for c in _count_nodes(children) if c["status"] == "downloaded")
+    pw_count = sum(1 for c in _count_nodes(children) if c["status"] == "paywalled")
+    nf_count = sum(1 for c in _count_nodes(children) if c["status"] == "not_found")
 
     job["tree_data"] = {
         "root": {
-            "title": job["paper_title"],
-            "filename": job["original_filename"],
-            "folder": job["folder_name"],
-            "is_root": True,
+            "title": title,
+            "filename": f"{root_name}.pdf",
+            "folder": str(root_save_dir.relative_to(LIBRARY_DIR)),
+            "children": children,
         },
-        "children": job["references_processed"],
-        "stats": {"total": job["total"], "downloaded": dl, "paywalled": pw},
+        "stats": {
+            "total": job["total"],
+            "downloaded": dl_count,
+            "paywalled": pw_count,
+            "not_found": nf_count,
+        },
     }
     job["status"] = "done"
-    job["message"] = f"Done! Downloaded {dl}/{job['total']} PDFs ({pw} unavailable)"
+    job["message"] = f"Done! {dl_count} downloaded, {pw_count} paywalled, {nf_count} not found"
+
+
+def _count_nodes(nodes: list[dict]) -> list[dict]:
+    """Flatten all nodes in a tree for counting."""
+    result = []
+    for n in nodes:
+        result.append(n)
+        if n.get("children"):
+            result.extend(_count_nodes(n["children"]))
+    return result
 
 
 # ─── API Endpoints ────────────────────────────────────────────────────
 
 @app.post("/api/upload")
-async def upload_paper(file: UploadFile = File(...)):
-    """Upload a PDF and start reference processing."""
+async def upload_paper(
+    file: UploadFile = File(...),
+    depth: int = Query(2, ge=1, le=5, description="Tree depth (1=root→refs, 2=root→refs→subrefs, ...)"),
+):
+    """Upload a PDF and recursively build a citation tree."""
     if not file.filename.lower().endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Only PDF files are accepted")
 
     content = await file.read()
 
-    # Save temp file
     temp_path = f"temp_{hashlib.md5(content).hexdigest()}.pdf"
     with open(temp_path, 'wb') as f:
         f.write(content)
 
+    # Quick parse to get title and references for the response
     try:
         text = extract_text_from_pdf(temp_path)
         title = extract_paper_title(text)
@@ -280,37 +506,25 @@ async def upload_paper(file: UploadFile = File(...)):
         os.remove(temp_path)
         raise HTTPException(status_code=500, detail=f"Failed to parse PDF: {str(e)}")
 
-    # Create library folder
-    folder_name = sanitize_filename(title)
-    folder_path = LIBRARY_DIR / folder_name
-    folder_path.mkdir(exist_ok=True)
-
-    # Move uploaded file to library
-    original_fn = sanitize_filename(file.filename.rsplit('.', 1)[0]) + '.pdf'
-    os.replace(temp_path, str(folder_path / original_fn))
-
-    # Create job
     job_id = hashlib.md5(f"{title}{datetime.now().isoformat()}".encode()).hexdigest()[:12]
     jobs[job_id] = {
         "status": "processing",
-        "folder_name": folder_name,
         "paper_title": title,
-        "original_filename": original_fn,
         "references_raw": references,
-        "references_processed": [],
         "current": 0,
         "total": len(references),
-        "message": "Starting reference search...",
+        "message": "Queued...",
         "tree_data": None,
     }
 
-    asyncio.create_task(process_references(job_id))
+    # Launch background job with depth parameter
+    asyncio.create_task(run_job(job_id, temp_path, max_depth=depth))
 
     return {
         "job_id": job_id,
-        "folder_name": folder_name,
         "paper_title": title,
         "total_references": len(references),
+        "depth": depth,
     }
 
 
@@ -334,17 +548,19 @@ async def get_progress(job_id: str):
             }
             if job["status"] == "done":
                 payload["tree_data"] = job["tree_data"]
+            elif job["status"] == "error":
+                payload["message"] = job["message"]
 
             yield f"data: {json.dumps(payload)}\n\n"
 
-            if job["status"] == "done":
+            if job["status"] in ("done", "error"):
                 break
             await asyncio.sleep(0.5)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
-@app.get("/api/pdf/{folder}/{filename}")
+@app.get("/api/pdf/{folder:path}/{filename}")
 async def serve_pdf(folder: str, filename: str):
     """Serve a PDF from the library."""
     pdf_path = LIBRARY_DIR / folder / filename
@@ -355,6 +571,17 @@ async def serve_pdf(folder: str, filename: str):
         media_type="application/pdf",
         headers={"Content-Disposition": f"inline; filename={filename}"},
     )
+
+
+@app.get("/api/tree/{job_id}")
+async def get_tree(job_id: str):
+    """Get the final tree data for a completed job."""
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = jobs[job_id]
+    if job["status"] != "done":
+        raise HTTPException(status_code=400, detail="Job still processing")
+    return job["tree_data"]
 
 
 # ─── Static Files & Entry Point ──────────────────────────────────────

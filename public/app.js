@@ -1,6 +1,6 @@
 /**
  * Research Backtracker — Frontend Application
- * Handles upload, progress tracking, tree rendering, and PDF viewing.
+ * Handles upload, progress tracking, nested tree rendering, and Chrome-style PDF viewer.
  */
 
 // ─── PDF.js Setup ────────────────────────────────────────────────────
@@ -9,6 +9,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc =
 
 // ─── DOM Elements ────────────────────────────────────────────────────
 const $ = (sel) => document.querySelector(sel);
+const $$ = (sel) => document.querySelectorAll(sel);
 
 const uploadScreen = $('#upload-screen');
 const processingScreen = $('#processing-screen');
@@ -16,6 +17,11 @@ const treeScreen = $('#tree-screen');
 
 const uploadCircle = $('#upload-circle');
 const fileInput = $('#file-input');
+
+const depthValue = $('#depth-value');
+const depthHint = $('#depth-hint');
+const depthMinus = $('#depth-minus');
+const depthPlus = $('#depth-plus');
 
 const progressFill = $('#progress-fill');
 const progressStats = $('#progress-stats');
@@ -26,22 +32,43 @@ const treeContainer = $('#tree-container');
 const treeStats = $('#tree-stats');
 const backBtn = $('#back-btn');
 
+// PDF viewer elements
 const pdfOverlay = $('#pdf-overlay');
-const pdfPanel = $('#pdf-panel');
+const pdfBody = $('#pdf-body');
+const pdfViewport = $('#pdf-viewport');
+const pdfPages = $('#pdf-pages');
 const pdfCloseBtn = $('#pdf-close-btn');
 const pdfTitle = $('#pdf-title');
 const pdfPrev = $('#pdf-prev');
 const pdfNext = $('#pdf-next');
 const pdfPageInfo = $('#pdf-page-info');
-const pdfCanvas = $('#pdf-canvas');
-const pdfCanvasWrapper = $('#pdf-canvas-wrapper');
+const pdfZoomIn = $('#pdf-zoom-in');
+const pdfZoomOut = $('#pdf-zoom-out');
+const pdfZoomLevel = $('#pdf-zoom-level');
 
 // ─── State ───────────────────────────────────────────────────────────
 let currentTreeData = null;
 let pdfDoc = null;
-let currentPage = 1;
-let totalPages = 0;
-let renderingPage = false;
+let pdfPagesData = [];
+let currentScale = 1.0;
+let currentPdfUrl = '';
+
+// ─── Depth Setting ──────────────────────────────────────────────────
+let treeDepth = 2;
+
+const depthLabels = ['', 'Root → References', 'Root → References → Sub-refs', '3 levels deep', '4 levels deep', '5 levels deep'];
+
+function updateDepthDisplay() {
+    depthValue.textContent = treeDepth;
+    depthHint.textContent = depthLabels[treeDepth] || `${treeDepth} levels deep`;
+}
+
+depthMinus.addEventListener('click', () => {
+    if (treeDepth > 1) { treeDepth--; updateDepthDisplay(); }
+});
+depthPlus.addEventListener('click', () => {
+    if (treeDepth < 5) { treeDepth++; updateDepthDisplay(); }
+});
 
 // ─── Screen Management ──────────────────────────────────────────────
 function showScreen(screen) {
@@ -89,7 +116,8 @@ async function uploadFile(file) {
     formData.append('file', file);
 
     try {
-        const resp = await fetch('/api/upload', { method: 'POST', body: formData });
+        const url = `/api/upload?depth=${treeDepth}`;
+        const resp = await fetch(url, { method: 'POST', body: formData });
         if (!resp.ok) {
             const err = await resp.json();
             throw new Error(err.detail || 'Upload failed');
@@ -104,7 +132,6 @@ async function uploadFile(file) {
             return;
         }
 
-        // Connect to SSE for progress
         trackProgress(data.job_id);
     } catch (err) {
         progressMessage.textContent = `Error: ${err.message}`;
@@ -120,7 +147,7 @@ function trackProgress(jobId) {
         const data = JSON.parse(event.data);
         const pct = data.total > 0 ? (data.current / data.total) * 100 : 0;
 
-        progressFill.style.width = `${pct}%`;
+        progressFill.style.width = `${Math.min(pct, 100)}%`;
         progressStats.textContent = `${data.current} / ${data.total}`;
         progressMessage.textContent = data.message;
 
@@ -131,6 +158,10 @@ function trackProgress(jobId) {
                 renderTree(data.tree_data);
                 showScreen(treeScreen);
             }, 600);
+        } else if (data.status === 'error') {
+            evtSource.close();
+            progressMessage.textContent = data.message || 'An error occurred';
+            setTimeout(() => showScreen(uploadScreen), 3000);
         }
     };
 
@@ -143,193 +174,343 @@ function trackProgress(jobId) {
 
 // ─── Tree Rendering ──────────────────────────────────────────────────
 function renderTree(data) {
-    const { root, children, stats } = data;
+    const { root, stats } = data;
 
-    // Stats header
-    treeStats.textContent = `${stats.downloaded} downloaded · ${stats.paywalled} unavailable · ${stats.total} total`;
+    treeStats.textContent = `${stats.downloaded} downloaded · ${stats.paywalled} paywalled · ${stats.not_found} not found · ${stats.total} refs`;
 
-    // Clear previous tree
     treeContainer.innerHTML = '';
 
-    // Root node
-    const rootEl = document.createElement('div');
-    rootEl.className = 'root-node';
-    rootEl.innerHTML = `
-        <span class="node-label">Root Paper</span>
-        <span class="node-title">${escHtml(root.title)}</span>
-    `;
-    rootEl.addEventListener('click', () => {
-        openPdfViewer(root.folder, root.filename, root.title, rootEl);
+    // Render root node
+    const rootEl = createNodeElement(root, true);
+    rootEl.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (root.filename) {
+            openPdfViewer(root.folder, root.filename, root.title);
+        }
     });
     treeContainer.appendChild(rootEl);
 
-    // Trunk line
-    const trunk = document.createElement('div');
-    trunk.className = 'tree-trunk';
-    treeContainer.appendChild(trunk);
+    // Root connector
+    const rootConn = document.createElement('div');
+    rootConn.className = 't-connector';
+    treeContainer.appendChild(rootConn);
 
-    // Horizontal branch
-    const branchLine = document.createElement('div');
-    branchLine.className = 'tree-branch-line';
-    treeContainer.appendChild(branchLine);
+    // Render children (branches)
+    if (root.children && root.children.length > 0) {
+        const branchesWrap = document.createElement('div');
+        branchesWrap.className = 'branches-wrapper';
+        root.children.forEach((branch) => {
+            const branchCol = document.createElement('div');
+            branchCol.className = 'branch-column';
 
-    // Children container
-    const childrenWrap = document.createElement('div');
-    childrenWrap.className = 'children-container';
+            // Horizontal connector from trunk
+            const hConn = document.createElement('div');
+            hConn.className = 't-hconnector';
+            branchCol.appendChild(hConn);
 
-    children.forEach((child) => {
-        const branch = document.createElement('div');
-        branch.className = 'child-branch';
+            // Vertical connector
+            const vConn = document.createElement('div');
+            vConn.className = 't-connector-short';
+            branchCol.appendChild(vConn);
 
-        // Connector
-        const connector = document.createElement('div');
-        connector.className = 'child-connector';
-        branch.appendChild(connector);
-
-        // Node
-        const node = document.createElement('div');
-        const isAvailable = child.downloaded && child.filename;
-        node.className = `child-node ${isAvailable ? 'available' : 'paywalled'}`;
-
-        const authorsStr = child.authors && child.authors.length > 0
-            ? child.authors.join(', ')
-            : 'Unknown authors';
-
-        let statusHtml = '';
-        if (isAvailable) {
-            statusHtml = '<span class="node-status downloaded">✓ PDF Available</span>';
-        } else {
-            statusHtml = '<span class="node-status paywalled">Unavailable</span>';
-        }
-
-        let webBtnHtml = '';
-        if (!isAvailable && child.paper_url) {
-            webBtnHtml = `<a class="view-web-btn" href="${escHtml(child.paper_url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">View on Web ↗</a>`;
-        }
-
-        node.innerHTML = `
-            <div class="node-title">${escHtml(child.title)}</div>
-            <div class="node-meta">
-                ${child.year ? `<span class="year">${child.year}</span> · ` : ''}${escHtml(authorsStr)}
-            </div>
-            ${statusHtml}
-            ${webBtnHtml}
-        `;
-
-        if (isAvailable) {
-            node.addEventListener('click', () => {
-                openPdfViewer(
-                    currentTreeData.root.folder,
-                    child.filename,
-                    child.title,
-                    node
-                );
+            // Branch node
+            const branchEl = createNodeElement(branch, false);
+            branchEl.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (branch.filename) {
+                    openPdfViewer(branch.folder, branch.filename, branch.title);
+                } else if (branch.paper_url) {
+                    window.open(branch.paper_url, '_blank');
+                }
             });
-        }
+            branchCol.appendChild(branchEl);
 
-        branch.appendChild(node);
-        childrenWrap.appendChild(branch);
-    });
+            // Leaves section (if any)
+            if (branch.children && branch.children.length > 0) {
+                const leafConn = document.createElement('div');
+                leafConn.className = 't-connector-short';
+                branchCol.appendChild(leafConn);
 
-    treeContainer.appendChild(childrenWrap);
+                const leavesWrap = document.createElement('div');
+                leavesWrap.className = 'leaves-wrapper';
+                branch.children.forEach((leaf) => {
+                    const leafEl = createNodeElement(leaf, false, true);
+                    leafEl.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        if (leaf.filename) {
+                            openPdfViewer(leaf.folder, leaf.filename, leaf.title);
+                        } else if (leaf.paper_url) {
+                            window.open(leaf.paper_url, '_blank');
+                        }
+                    });
+                    leavesWrap.appendChild(leafEl);
+                });
+                branchCol.appendChild(leavesWrap);
+            }
+
+            branchesWrap.appendChild(branchCol);
+        });
+        treeContainer.appendChild(branchesWrap);
+    }
 }
 
-// ─── PDF Viewer ──────────────────────────────────────────────────────
-function openPdfViewer(folder, filename, title, sourceEl) {
+function createNodeElement(node, isRoot = false, isLeaf = false) {
+    const el = document.createElement('div');
+    el.className = 't-node';
+
+    if (isRoot) {
+        el.classList.add('t-node-root');
+    } else if (isLeaf) {
+        el.classList.add('t-node-leaf');
+    } else {
+        el.classList.add('t-node-branch');
+    }
+
+    const status = node.status || 'found';
+    if (status === 'downloaded') el.classList.add('t-node-available');
+    else if (status === 'paywalled') el.classList.add('t-node-paywalled');
+    else if (status === 'not_found') el.classList.add('t-node-missing');
+
+    let badge = '';
+    if (isRoot) badge = '<span class="t-badge t-badge-root">Paper</span>';
+    else if (isLeaf) badge = '<span class="t-badge t-badge-leaf">Ref</span>';
+    else badge = '<span class="t-badge t-badge-branch">Branch</span>';
+
+    const authorsStr = node.authors && node.authors.length > 0
+        ? node.authors.join(', ')
+        : '';
+
+    let statusLabel = '';
+    if (status === 'downloaded') statusLabel = '<span class="t-status t-status-dl">✓ PDF</span>';
+    else if (status === 'paywalled') statusLabel = '<span class="t-status t-status-pw">🔒 Paywalled</span>';
+    else if (status === 'not_found') statusLabel = '<span class="t-status t-status-nf">✗ Not Found</span>';
+    else if (status === 'found') statusLabel = '<span class="t-status t-status-fd">◉ Found</span>';
+
+    const count = node.children && node.children.length > 0
+        ? `<span class="t-child-count">${node.children.length} refs</span>`
+        : '';
+
+    let yearHtml = node.year ? `<span class="t-year">${node.year}</span> · ` : '';
+
+    el.innerHTML = `
+        ${badge}
+        <div class="t-title">${escHtml(node.title)}</div>
+        <div class="t-meta">
+            ${yearHtml}${escHtml(authorsStr)}
+        </div>
+        <div class="t-footer">
+            ${statusLabel}
+            ${count}
+        </div>
+    `;
+
+    if (node.paper_url && !isRoot) {
+        el.dataset.url = node.paper_url;
+    }
+
+    return el;
+}
+
+// ─── PDF Viewer (Chrome-style) ──────────────────────────────────────
+
+function openPdfViewer(folder, filename, title) {
+    if (!folder || !filename) return;
     pdfTitle.textContent = title;
-    currentPage = 1;
-    pdfPageInfo.textContent = '...';
-
-    // Get source element position for animation origin
-    const rect = sourceEl.getBoundingClientRect();
-    pdfPanel.style.top = `${rect.top}px`;
-    pdfPanel.style.left = `${rect.left}px`;
-    pdfPanel.style.width = `${rect.width}px`;
-    pdfPanel.style.height = `${rect.height}px`;
-
-    // Force reflow then animate
-    pdfPanel.offsetHeight;
+    currentPdfUrl = `/api/pdf/${encodeURIComponent(folder)}/${encodeURIComponent(filename)}`;
+    currentScale = 1.0;
+    pdfZoomLevel.textContent = '100%';
+    pdfPages.innerHTML = '<div class="pdf-loading">Loading PDF...</div>';
     pdfOverlay.classList.add('active');
+    pdfBody.scrollTop = 0;
 
-    // Load PDF
-    const url = `/api/pdf/${encodeURIComponent(folder)}/${encodeURIComponent(filename)}`;
-    loadPdf(url);
+    loadPdfDocument(currentPdfUrl);
 }
 
-async function loadPdf(url) {
+async function loadPdfDocument(url) {
     try {
         pdfDoc = await pdfjsLib.getDocument(url).promise;
-        totalPages = pdfDoc.numPages;
-        currentPage = 1;
-        renderPage(currentPage);
+        pdfPagesData = [];
+        pdfPages.innerHTML = '';
+        pdfPageInfo.textContent = `1 / ${pdfDoc.numPages}`;
+        renderAllPages();
     } catch (err) {
-        console.error('PDF load error:', err);
-        pdfPageInfo.textContent = 'Load error';
+        pdfPages.innerHTML = '<div class="pdf-loading">Failed to load PDF</div>';
     }
+}
+
+async function renderAllPages() {
+    if (!pdfDoc) return;
+    pdfPages.innerHTML = '';
+    pdfPagesData = [];
+
+    for (let i = 1; i <= pdfDoc.numPages; i++) {
+        const pageContainer = document.createElement('div');
+        pageContainer.className = 'pdf-page-container';
+        pageContainer.dataset.page = i;
+        pdfPages.appendChild(pageContainer);
+    }
+
+    // Render pages in batches for responsiveness
+    const batchSize = 4;
+    for (let i = 1; i <= pdfDoc.numPages; i += batchSize) {
+        const batch = [];
+        for (let j = i; j < Math.min(i + batchSize, pdfDoc.numPages + 1); j++) {
+            batch.push(renderPage(j));
+        }
+        await Promise.all(batch);
+        // Allow UI to breathe
+        await new Promise(r => setTimeout(r, 10));
+    }
+
+    updateVisiblePage();
 }
 
 async function renderPage(pageNum) {
-    if (renderingPage || !pdfDoc) return;
-    renderingPage = true;
-
     try {
         const page = await pdfDoc.getPage(pageNum);
-        const wrapperWidth = pdfCanvasWrapper.clientWidth - 48;
-        const unscaledViewport = page.getViewport({ scale: 1 });
-        const scale = Math.min(wrapperWidth / unscaledViewport.width, 2.0);
-        const viewport = page.getViewport({ scale });
+        const viewport = page.getViewport({ scale: currentScale });
 
-        pdfCanvas.width = viewport.width;
-        pdfCanvas.height = viewport.height;
+        const container = pdfPages.querySelector(`[data-page="${pageNum}"]`);
+        if (!container) return;
 
-        await page.render({
-            canvasContext: pdfCanvas.getContext('2d'),
-            viewport,
-        }).promise;
+        const canvas = document.createElement('canvas');
+        canvas.className = 'pdf-page-canvas';
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        container.appendChild(canvas);
 
-        pdfPageInfo.textContent = `${pageNum} / ${totalPages}`;
+        const ctx = canvas.getContext('2d');
+        await page.render({ canvasContext: ctx, viewport }).promise;
+
+        pdfPagesData[pageNum] = { page, viewport };
     } catch (err) {
-        console.error('Render error:', err);
+        // Skip failed page
+    }
+}
+
+async function reRenderAllPages() {
+    if (!pdfDoc) return;
+    pdfPages.innerHTML = '';
+    pdfPagesData = [];
+
+    for (let i = 1; i <= pdfDoc.numPages; i++) {
+        const container = document.createElement('div');
+        container.className = 'pdf-page-container';
+        container.dataset.page = i;
+        pdfPages.appendChild(container);
     }
 
-    renderingPage = false;
+    const batchSize = 4;
+    for (let i = 1; i <= pdfDoc.numPages; i += batchSize) {
+        const batch = [];
+        for (let j = i; j < Math.min(i + batchSize, pdfDoc.numPages + 1); j++) {
+            batch.push(renderPage(j));
+        }
+        await Promise.all(batch);
+        await new Promise(r => setTimeout(r, 10));
+    }
+
+    updateVisiblePage();
+}
+
+// ─── Zoom ────────────────────────────────────────────────────────────
+function zoomIn() {
+    if (currentScale >= 3.0) return;
+    currentScale = Math.round((currentScale + 0.25) * 100) / 100;
+    pdfZoomLevel.textContent = `${Math.round(currentScale * 100)}%`;
+    reRenderAllPages();
+}
+
+function zoomOut() {
+    if (currentScale <= 0.25) return;
+    currentScale = Math.round((currentScale - 0.25) * 100) / 100;
+    pdfZoomLevel.textContent = `${Math.round(currentScale * 100)}%`;
+    reRenderAllPages();
+}
+
+pdfZoomIn.addEventListener('click', zoomIn);
+pdfZoomOut.addEventListener('click', zoomOut);
+
+// ─── Page Navigation ────────────────────────────────────────────────
+function goToPage(pageNum) {
+    if (!pdfDoc) return;
+    const page = Math.max(1, Math.min(pageNum, pdfDoc.numPages));
+    const container = pdfPages.querySelector(`[data-page="${page}"]`);
+    if (container) {
+        container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    pdfPageInfo.textContent = `${page} / ${pdfDoc.numPages}`;
 }
 
 pdfPrev.addEventListener('click', () => {
-    if (currentPage > 1) {
-        currentPage--;
-        renderPage(currentPage);
-    }
+    if (!pdfDoc) return;
+    const current = getVisiblePage();
+    goToPage(current - 1);
 });
 
 pdfNext.addEventListener('click', () => {
-    if (currentPage < totalPages) {
-        currentPage++;
-        renderPage(currentPage);
-    }
+    if (!pdfDoc) return;
+    const current = getVisiblePage();
+    goToPage(current + 1);
 });
 
-pdfCloseBtn.addEventListener('click', closePdfViewer);
+function getVisiblePage() {
+    const containers = pdfPages.querySelectorAll('.pdf-page-container');
+    let bestPage = 1;
+    let bestDist = Infinity;
+    const scrollTop = pdfBody.scrollTop;
+    const bodyHeight = pdfBody.clientHeight;
+    const midPoint = scrollTop + bodyHeight / 2;
 
+    containers.forEach((c) => {
+        const rect = c.getBoundingClientRect();
+        const bodyRect = pdfBody.getBoundingClientRect();
+        const cMid = rect.top - bodyRect.top + rect.height / 2;
+        const dist = Math.abs(cMid - bodyHeight / 2);
+        if (dist < bestDist) {
+            bestDist = dist;
+            bestPage = parseInt(c.dataset.page) || 1;
+        }
+    });
+    return bestPage;
+}
+
+function updateVisiblePage() {
+    if (!pdfDoc) return;
+    const page = getVisiblePage();
+    pdfPageInfo.textContent = `${page} / ${pdfDoc.numPages}`;
+}
+
+// ─── PDF Viewer Scroll Handling ─────────────────────────────────────
+let scrollTimeout = null;
+pdfBody.addEventListener('scroll', () => {
+    if (scrollTimeout) clearTimeout(scrollTimeout);
+    scrollTimeout = setTimeout(updateVisiblePage, 150);
+});
+
+// ─── PDF Viewer Close ───────────────────────────────────────────────
+pdfCloseBtn.addEventListener('click', closePdfViewer);
 pdfOverlay.addEventListener('click', (e) => {
-    if (e.target === pdfOverlay) closePdfViewer();
+    if (e.target === pdfOverlay || e.target === pdfBody || e.target === pdfViewport) {
+        closePdfViewer();
+    }
 });
 
 function closePdfViewer() {
     pdfOverlay.classList.remove('active');
-    setTimeout(() => {
-        pdfDoc = null;
-        pdfCanvas.width = 0;
-        pdfCanvas.height = 0;
-    }, 500);
+    pdfDoc = null;
+    pdfPagesData = [];
+    pdfPages.innerHTML = '';
 }
 
-// Keyboard navigation
+// ─── Keyboard Navigation ─────────────────────────────────────────────
 document.addEventListener('keydown', (e) => {
     if (!pdfOverlay.classList.contains('active')) return;
     if (e.key === 'Escape') closePdfViewer();
     if (e.key === 'ArrowLeft') pdfPrev.click();
     if (e.key === 'ArrowRight') pdfNext.click();
+    if (e.key === '+' || e.key === '=') { e.preventDefault(); zoomIn(); }
+    if (e.key === '-') { e.preventDefault(); zoomOut(); }
 });
 
 // ─── Back Button ─────────────────────────────────────────────────────

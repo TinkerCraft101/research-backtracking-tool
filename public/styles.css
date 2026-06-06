@@ -12,10 +12,10 @@
     --accent-glow: rgba(0, 212, 255, 0.3);
     --accent-soft: rgba(0, 212, 255, 0.12);
     --purple: #8b5cf6;
-    --purple-glow: rgba(139, 92, 246, 0.3);
     --green: #34d399;
     --amber: #fbbf24;
     --red: #f87171;
+    --blue: #60a5fa;
     --text-primary: #f1f5f9;
     --text-secondary: #94a3b8;
     --text-dim: #475569;
@@ -44,7 +44,6 @@ body {
     color: var(--text-primary);
 }
 
-/* Ambient glow background */
 body::before {
     content: '';
     position: fixed;
@@ -69,7 +68,6 @@ body::after {
     z-index: 0;
 }
 
-/* ── Screens ── */
 .screen {
     position: fixed;
     inset: 0;
@@ -95,6 +93,10 @@ body::after {
 .upload-area {
     position: relative;
     margin-bottom: 48px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 24px;
 }
 
 .upload-circle {
@@ -170,6 +172,69 @@ body::after {
     font-size: 15px;
     color: var(--text-secondary);
     font-weight: 300;
+}
+
+/* ── Depth Setting ── */
+.depth-setting {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+}
+
+.depth-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+}
+
+.depth-control {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: var(--glass);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-sm);
+    padding: 6px 12px;
+}
+
+.depth-btn {
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    border: 1px solid var(--glass-border);
+    background: var(--glass);
+    color: var(--text-secondary);
+    font-size: 16px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: var(--transition);
+    font-family: var(--font);
+}
+
+.depth-btn:hover {
+    background: var(--glass-hover);
+    color: var(--accent);
+    border-color: var(--accent);
+}
+
+.depth-value {
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--accent);
+    min-width: 24px;
+    text-align: center;
+    font-family: var(--font-mono);
+}
+
+.depth-hint {
+    font-size: 11px;
+    color: var(--text-dim);
+    text-align: center;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -258,11 +323,11 @@ body::after {
     top: 0;
     left: 0;
     right: 0;
-    height: 64px;
+    height: 56px;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0 32px;
+    padding: 0 24px;
     background: rgba(6, 10, 19, 0.85);
     backdrop-filter: blur(16px);
     border-bottom: 1px solid var(--glass-border);
@@ -272,11 +337,11 @@ body::after {
 .back-btn {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     background: var(--glass);
     border: 1px solid var(--glass-border);
     color: var(--text-secondary);
-    padding: 8px 16px;
+    padding: 6px 14px;
     border-radius: var(--radius-sm);
     cursor: pointer;
     font-family: var(--font);
@@ -291,237 +356,234 @@ body::after {
 }
 
 .tree-stats {
-    font-size: 13px;
+    font-size: 12px;
     color: var(--text-secondary);
     font-family: var(--font-mono);
 }
 
-.tree-container {
+.tree-scroll {
     position: absolute;
     inset: 0;
-    padding-top: 96px;
+    padding-top: 72px;
     padding-bottom: 40px;
-    overflow-y: auto;
-    overflow-x: hidden;
+    overflow: auto;
+}
+
+.tree-container {
     display: flex;
     flex-direction: column;
     align-items: center;
+    min-height: 100%;
+    padding: 0 24px;
+    padding-bottom: 60px;
 }
 
-/* ── Root Node ── */
-.root-node {
+/* ── Tree Nodes ── */
+
+.t-node {
     display: flex;
     flex-direction: column;
     align-items: center;
-    padding: 24px 36px;
-    background: linear-gradient(135deg, rgba(0, 212, 255, 0.1), rgba(139, 92, 246, 0.08));
-    border: 1px solid rgba(0, 212, 255, 0.25);
-    border-radius: var(--radius);
-    cursor: pointer;
-    transition: var(--transition);
-    max-width: 400px;
-    text-align: center;
-    position: relative;
-}
-
-.root-node:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 8px 40px rgba(0, 212, 255, 0.12);
-    border-color: var(--accent);
-}
-
-.root-node .node-label {
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 1.5px;
-    text-transform: uppercase;
-    color: var(--accent);
-    margin-bottom: 8px;
-}
-
-.root-node .node-title {
-    font-size: 15px;
-    font-weight: 500;
-    line-height: 1.5;
-    color: var(--text-primary);
-}
-
-/* ── Tree Connector Lines ── */
-.tree-trunk {
-    width: 2px;
-    height: 48px;
-    background: linear-gradient(180deg, var(--accent), rgba(0, 212, 255, 0.2));
-    margin: 0 auto;
-}
-
-.tree-branch-line {
-    height: 2px;
-    background: rgba(0, 212, 255, 0.15);
-    align-self: stretch;
-    margin: 0 80px;
-    border-radius: 1px;
-}
-
-/* ── Children Grid ── */
-.children-container {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: center;
-    gap: 16px;
-    padding: 0 32px;
-    max-width: 1200px;
-    width: 100%;
-}
-
-.child-branch {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-}
-
-.child-connector {
-    width: 2px;
-    height: 24px;
-    background: rgba(0, 212, 255, 0.15);
-}
-
-/* ── Child Node ── */
-.child-node {
-    width: 220px;
-    padding: 20px;
+    padding: 16px 20px;
     background: var(--glass);
     border: 1px solid var(--glass-border);
     border-radius: var(--radius-sm);
     cursor: pointer;
     transition: var(--transition);
+    max-width: 260px;
+    text-align: center;
     position: relative;
-    overflow: hidden;
+    gap: 6px;
 }
 
-.child-node::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    border-radius: var(--radius-sm);
-    opacity: 0;
-    transition: opacity var(--transition);
-    pointer-events: none;
-}
-
-.child-node.available::before {
-    background: linear-gradient(135deg, rgba(0, 212, 255, 0.06), transparent);
-}
-
-.child-node.available {
-    border-color: rgba(0, 212, 255, 0.15);
-}
-
-.child-node.available:hover {
-    border-color: var(--accent);
-    transform: translateY(-4px);
-    box-shadow: 0 12px 40px rgba(0, 212, 255, 0.1);
-}
-
-.child-node.available:hover::before {
-    opacity: 1;
-}
-
-/* Paywalled / Unavailable nodes */
-.child-node.paywalled {
-    opacity: 0.35;
-    border-color: rgba(255, 255, 255, 0.04);
-}
-
-.child-node.paywalled:hover {
-    opacity: 0.7;
-    border-color: rgba(251, 191, 36, 0.3);
+.t-node:hover {
     transform: translateY(-2px);
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
 }
 
-.node-title {
+.t-node-root {
+    background: linear-gradient(135deg, rgba(0, 212, 255, 0.12), rgba(139, 92, 246, 0.08));
+    border-color: rgba(0, 212, 255, 0.25);
+    min-width: 280px;
+    padding: 20px 28px;
+}
+
+.t-node-root:hover {
+    border-color: var(--accent);
+    box-shadow: 0 8px 40px rgba(0, 212, 255, 0.12);
+}
+
+.t-node-branch {
+    border-color: rgba(96, 165, 250, 0.2);
+    min-width: 220px;
+}
+
+.t-node-branch:hover {
+    border-color: var(--blue);
+}
+
+.t-node-leaf {
+    border-color: rgba(52, 211, 153, 0.12);
+    min-width: 200px;
+    padding: 12px 16px;
+}
+
+.t-node-leaf:hover {
+    border-color: var(--green);
+}
+
+.t-node-available:hover {
+    border-color: var(--green);
+    box-shadow: 0 4px 20px rgba(52, 211, 153, 0.08);
+}
+
+.t-node-paywalled {
+    opacity: 0.5;
+}
+
+.t-node-paywalled:hover {
+    opacity: 0.85;
+    border-color: var(--amber);
+}
+
+.t-node-missing {
+    opacity: 0.3;
+}
+
+.t-node-missing:hover {
+    opacity: 0.6;
+}
+
+/* Badges */
+.t-badge {
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    padding: 2px 8px;
+    border-radius: 4px;
+}
+
+.t-badge-root {
+    background: rgba(0, 212, 255, 0.15);
+    color: var(--accent);
+}
+
+.t-badge-branch {
+    background: rgba(96, 165, 250, 0.12);
+    color: var(--blue);
+}
+
+.t-badge-leaf {
+    background: rgba(52, 211, 153, 0.1);
+    color: var(--green);
+}
+
+.t-title {
     font-size: 13px;
     font-weight: 500;
-    line-height: 1.5;
+    line-height: 1.4;
     color: var(--text-primary);
-    margin-bottom: 8px;
     display: -webkit-box;
     -webkit-line-clamp: 3;
     -webkit-box-orient: vertical;
     overflow: hidden;
 }
 
-.node-meta {
-    font-size: 11px;
-    color: var(--text-dim);
-    line-height: 1.4;
+.t-node-leaf .t-title {
+    font-size: 12px;
+    -webkit-line-clamp: 2;
 }
 
-.node-meta .year {
+.t-meta {
+    font-size: 10px;
+    color: var(--text-dim);
+    line-height: 1.3;
+}
+
+.t-year {
     color: var(--accent);
     font-family: var(--font-mono);
     font-weight: 500;
 }
 
-.node-status {
-    display: inline-flex;
+.t-footer {
+    display: flex;
     align-items: center;
-    gap: 4px;
-    margin-top: 10px;
-    font-size: 10px;
-    font-weight: 500;
-    letter-spacing: 0.5px;
-    text-transform: uppercase;
-    padding: 3px 8px;
-    border-radius: 6px;
+    gap: 8px;
+    margin-top: 4px;
 }
 
-.node-status.downloaded {
-    background: rgba(52, 211, 153, 0.1);
-    color: var(--green);
+.t-status {
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    padding: 2px 6px;
+    border-radius: 4px;
 }
 
-.node-status.paywalled {
-    background: rgba(251, 191, 36, 0.08);
-    color: var(--amber);
+.t-status-dl { background: rgba(52, 211, 153, 0.12); color: var(--green); }
+.t-status-pw { background: rgba(251, 191, 36, 0.08); color: var(--amber); }
+.t-status-nf { background: rgba(248, 113, 113, 0.1); color: var(--red); }
+.t-status-fd { background: rgba(96, 165, 250, 0.08); color: var(--blue); }
+
+.t-child-count {
+    font-size: 9px;
+    color: var(--text-dim);
+    font-family: var(--font-mono);
 }
 
-/* View on Web button for paywalled papers */
-.view-web-btn {
-    position: absolute;
-    bottom: 16px;
-    left: 50%;
-    transform: translateX(-50%) translateY(8px);
-    background: rgba(251, 191, 36, 0.15);
-    border: 1px solid rgba(251, 191, 36, 0.3);
-    color: var(--amber);
-    padding: 6px 14px;
-    border-radius: 8px;
-    font-family: var(--font);
-    font-size: 11px;
-    font-weight: 500;
-    cursor: pointer;
-    opacity: 0;
-    pointer-events: none;
-    transition: var(--transition);
-    white-space: nowrap;
-    text-decoration: none;
-    display: inline-flex;
+/* ── Tree Connectors ── */
+
+.t-connector {
+    width: 2px;
+    height: 32px;
+    background: linear-gradient(180deg, var(--accent), rgba(0, 212, 255, 0.2));
+}
+
+.t-connector-short {
+    width: 2px;
+    height: 20px;
+    background: rgba(0, 212, 255, 0.15);
+}
+
+.t-hconnector {
+    height: 2px;
+    width: 100%;
+    background: rgba(0, 212, 255, 0.1);
+}
+
+/* ── Branches Layout ── */
+
+.branches-wrapper {
+    display: flex;
+    justify-content: center;
+    gap: 20px;
+    width: 100%;
+    max-width: 1400px;
+    padding: 0 16px;
+    flex-wrap: wrap;
+}
+
+.branch-column {
+    display: flex;
+    flex-direction: column;
     align-items: center;
-    gap: 4px;
+    min-width: 0;
+    flex: 0 1 auto;
 }
 
-.child-node.paywalled:hover .view-web-btn {
-    opacity: 1;
-    pointer-events: all;
-    transform: translateX(-50%) translateY(0);
-}
+/* ── Leaves Layout ── */
 
-.view-web-btn:hover {
-    background: rgba(251, 191, 36, 0.25);
+.leaves-wrapper {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   PDF VIEWER OVERLAY
+   PDF VIEWER OVERLAY (Chrome-style)
    ═══════════════════════════════════════════════════════════════════ */
 
 .pdf-overlay {
@@ -529,130 +591,155 @@ body::after {
     inset: 0;
     z-index: 100;
     background: rgba(0, 0, 0, 0);
+    display: flex;
+    flex-direction: column;
     pointer-events: none;
-    transition: background 0.4s ease;
+    visibility: hidden;
+    opacity: 0;
+    transition: background 0.3s ease, opacity 0.3s ease, visibility 0.3s ease;
 }
 
 .pdf-overlay.active {
-    background: rgba(0, 0, 0, 0.75);
+    background: #1a1a1a;
     pointer-events: all;
-}
-
-.pdf-panel {
-    position: absolute;
-    background: var(--bg-secondary);
-    border: 1px solid var(--glass-border);
-    border-radius: var(--radius);
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-    opacity: 0;
-    transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.pdf-overlay.active .pdf-panel {
+    visibility: visible;
     opacity: 1;
-    top: 24px !important;
-    left: 24px !important;
-    right: 24px;
-    bottom: 24px;
-    width: auto !important;
-    height: auto !important;
-    border-radius: var(--radius);
 }
 
+/* ── Toolbar ── */
 .pdf-toolbar {
     display: flex;
     align-items: center;
-    gap: 16px;
-    padding: 12px 20px;
-    background: rgba(255, 255, 255, 0.03);
-    border-bottom: 1px solid var(--glass-border);
+    padding: 0 12px;
+    height: 44px;
+    background: #2a2a2a;
+    border-bottom: 1px solid #333;
     flex-shrink: 0;
+    gap: 8px;
+    z-index: 101;
 }
 
-.pdf-close-btn {
-    background: none;
-    border: none;
-    color: var(--text-secondary);
-    cursor: pointer;
-    padding: 4px;
-    border-radius: 6px;
-    transition: var(--transition);
-    display: flex;
-    align-items: center;
-}
-
-.pdf-close-btn:hover {
-    color: var(--red);
-    background: rgba(248, 113, 113, 0.1);
-}
-
-.pdf-title {
-    flex: 1;
-    font-size: 14px;
-    font-weight: 500;
-    color: var(--text-primary);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.pdf-nav {
+.pdf-toolbar-left {
     display: flex;
     align-items: center;
     gap: 8px;
+    min-width: 0;
+    flex: 1;
 }
 
-.pdf-nav-btn {
+.pdf-toolbar-center {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.pdf-toolbar-right {
+    flex: 1;
+}
+
+.pdf-tbtn {
     width: 32px;
     height: 32px;
-    border-radius: 8px;
-    background: var(--glass);
-    border: 1px solid var(--glass-border);
-    color: var(--text-secondary);
-    font-size: 18px;
+    border-radius: 6px;
+    border: none;
+    background: transparent;
+    color: #aaa;
+    font-size: 14px;
     cursor: pointer;
-    transition: var(--transition);
     display: flex;
     align-items: center;
     justify-content: center;
+    transition: all 0.15s ease;
     font-family: var(--font);
 }
 
-.pdf-nav-btn:hover {
-    background: var(--glass-hover);
-    color: var(--text-primary);
-    border-color: var(--accent);
+.pdf-tbtn:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: #fff;
+}
+
+.pdf-title {
+    font-size: 13px;
+    color: #ccc;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 500;
+}
+
+.pdf-zoom-level {
+    font-size: 12px;
+    color: #aaa;
+    min-width: 40px;
+    text-align: center;
+    font-family: var(--font-mono);
+}
+
+.pdf-sep {
+    color: #444;
+    font-size: 16px;
+    padding: 0 4px;
+    user-select: none;
 }
 
 .pdf-page-info {
     font-family: var(--font-mono);
     font-size: 12px;
-    color: var(--text-secondary);
+    color: #aaa;
     min-width: 60px;
     text-align: center;
 }
 
-.pdf-canvas-wrapper {
+/* ── Viewport ── */
+.pdf-body {
     flex: 1;
     overflow: auto;
     display: flex;
     justify-content: center;
-    padding: 24px;
-    background: #111;
+    background: #1a1a1a;
 }
 
-.pdf-canvas-wrapper canvas {
+.pdf-viewport {
+    display: flex;
+    justify-content: center;
+    width: 100%;
+}
+
+.pdf-pages {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    padding: 24px 0;
+}
+
+.pdf-page-container {
+    display: flex;
+    justify-content: center;
+    background: #fff;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.pdf-page-canvas {
+    display: block;
     max-width: 100%;
     height: auto;
-    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+}
+
+.pdf-loading {
+    color: #888;
+    font-size: 14px;
+    padding: 60px 0;
+    text-align: center;
 }
 
 /* ── Scrollbar ── */
 ::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
+    width: 8px;
+    height: 8px;
 }
 
 ::-webkit-scrollbar-track {
@@ -660,34 +747,49 @@ body::after {
 }
 
 ::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.08);
-    border-radius: 3px;
+    background: rgba(255, 255, 255, 0.12);
+    border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-    background: rgba(255, 255, 255, 0.15);
+    background: rgba(255, 255, 255, 0.2);
 }
 
-/* ── Responsive ── */
+/* ═══════════════════════════════════════════════════════════════════
+   RESPONSIVE
+   ═══════════════════════════════════════════════════════════════════ */
+
 @media (max-width: 768px) {
     .upload-circle {
         width: 220px;
         height: 220px;
     }
 
-    .children-container {
-        padding: 0 16px;
+    .branches-wrapper {
+        flex-direction: column;
+        align-items: center;
+        gap: 16px;
     }
 
-    .child-node {
-        width: 180px;
+    .t-node-root {
+        min-width: 240px;
     }
 
-    .pdf-overlay.active .pdf-panel {
-        top: 0 !important;
-        left: 0 !important;
-        right: 0;
-        bottom: 0;
-        border-radius: 0;
+    .t-node-branch {
+        min-width: 200px;
+    }
+
+    .t-node-leaf {
+        min-width: 180px;
+    }
+
+    .pdf-toolbar-center {
+        gap: 4px;
+    }
+
+    .pdf-tbtn {
+        width: 28px;
+        height: 28px;
+        font-size: 13px;
     }
 }
