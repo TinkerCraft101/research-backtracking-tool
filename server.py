@@ -97,12 +97,12 @@ def extract_references(text: str) -> list[str]:
         refs = [r.strip() for r in refs if len(r.strip()) > 20]
 
     titles = []
-    for ref in refs[:20]:
+    for ref in refs:
         title = _extract_title_from_ref(ref)
         if title and len(title) > 5:
             titles.append(title)
 
-    return titles[:20]
+    return titles
 
 
 def _extract_title_from_ref(ref: str) -> str:
