@@ -551,11 +551,14 @@ function fitToScreen(svg, zoom, treeWidth, treeHeight, containerW, containerH, o
 
 // ─── PDF Viewer (Chrome-style) ──────────────────────────────────────
 
+let pdfBaseScale = 1.0;
+let pdfCurrentScalePercent = 100;
+
 function openPdfViewer(folder, filename, title) {
     if (!folder || !filename) return;
     pdfTitle.textContent = title;
     currentPdfUrl = `/api/pdf/${encodeURIComponent(folder)}/${encodeURIComponent(filename)}`;
-    currentScale = 1.0;
+    pdfCurrentScalePercent = 100;
     pdfZoomLevel.textContent = '100%';
     pdfPages.innerHTML = '<div class="pdf-loading">Loading PDF...</div>';
     pdfOverlay.classList.add('active');
@@ -570,10 +573,26 @@ async function loadPdfDocument(url) {
         pdfPagesData = [];
         pdfPages.innerHTML = '';
         pdfPageInfo.textContent = `1 / ${pdfDoc.numPages}`;
+        await calculateBaseScale();
         renderAllPages();
     } catch (err) {
         pdfPages.innerHTML = '<div class="pdf-loading">Failed to load PDF</div>';
     }
+}
+
+function calculateBaseScale() {
+    if (!pdfDoc) return Promise.resolve();
+    return pdfDoc.getPage(1).then((p) => {
+        const viewport = p.getViewport({ scale: 1.0 });
+        const availableWidth = pdfBody.clientWidth - 80;
+        pdfBaseScale = availableWidth / viewport.width;
+        pdfCurrentScalePercent = 100;
+        pdfZoomLevel.textContent = '100%';
+    });
+}
+
+function getPdfScale() {
+    return pdfBaseScale * (pdfCurrentScalePercent / 100);
 }
 
 async function renderAllPages() {
@@ -581,23 +600,29 @@ async function renderAllPages() {
     pdfPages.innerHTML = '';
     pdfPagesData = [];
 
+    const scale = getPdfScale();
+    const firstPage = await pdfDoc.getPage(1);
+    const viewport = firstPage.getViewport({ scale: 1.0 });
+    const pageWidth = viewport.width * scale;
+    const pageHeight = viewport.height * scale;
+
     for (let i = 1; i <= pdfDoc.numPages; i++) {
         const pageContainer = document.createElement('div');
         pageContainer.className = 'pdf-page-container';
         pageContainer.dataset.page = i;
+        pageContainer.style.width = `${pageWidth}px`;
+        pageContainer.style.height = `${pageHeight}px`;
         pdfPages.appendChild(pageContainer);
     }
 
-    // Render pages in batches for responsiveness
-    const batchSize = 4;
+    const batchSize = 6;
     for (let i = 1; i <= pdfDoc.numPages; i += batchSize) {
         const batch = [];
         for (let j = i; j < Math.min(i + batchSize, pdfDoc.numPages + 1); j++) {
             batch.push(renderPage(j));
         }
         await Promise.all(batch);
-        // Allow UI to breathe
-        await new Promise(r => setTimeout(r, 10));
+        await new Promise(r => setTimeout(r, 5));
     }
 
     updateVisiblePage();
@@ -606,10 +631,14 @@ async function renderAllPages() {
 async function renderPage(pageNum) {
     try {
         const page = await pdfDoc.getPage(pageNum);
-        const viewport = page.getViewport({ scale: currentScale });
+        const scale = getPdfScale();
+        const viewport = page.getViewport({ scale });
 
         const container = pdfPages.querySelector(`[data-page="${pageNum}"]`);
         if (!container) return;
+
+        const existingCanvas = container.querySelector('canvas');
+        if (existingCanvas) existingCanvas.remove();
 
         const canvas = document.createElement('canvas');
         canvas.className = 'pdf-page-canvas';
@@ -628,6 +657,13 @@ async function renderPage(pageNum) {
 
 async function reRenderAllPages() {
     if (!pdfDoc) return;
+
+    const scale = getPdfScale();
+    const firstPage = await pdfDoc.getPage(1);
+    const viewport = firstPage.getViewport({ scale: 1.0 });
+    const pageWidth = viewport.width * scale;
+    const pageHeight = viewport.height * scale;
+
     pdfPages.innerHTML = '';
     pdfPagesData = [];
 
@@ -635,17 +671,19 @@ async function reRenderAllPages() {
         const container = document.createElement('div');
         container.className = 'pdf-page-container';
         container.dataset.page = i;
+        container.style.width = `${pageWidth}px`;
+        container.style.height = `${pageHeight}px`;
         pdfPages.appendChild(container);
     }
 
-    const batchSize = 4;
+    const batchSize = 6;
     for (let i = 1; i <= pdfDoc.numPages; i += batchSize) {
         const batch = [];
         for (let j = i; j < Math.min(i + batchSize, pdfDoc.numPages + 1); j++) {
             batch.push(renderPage(j));
         }
         await Promise.all(batch);
-        await new Promise(r => setTimeout(r, 10));
+        await new Promise(r => setTimeout(r, 5));
     }
 
     updateVisiblePage();
@@ -653,16 +691,16 @@ async function reRenderAllPages() {
 
 // ─── Zoom ────────────────────────────────────────────────────────────
 function zoomIn() {
-    if (currentScale >= 3.0) return;
-    currentScale = Math.round((currentScale + 0.25) * 100) / 100;
-    pdfZoomLevel.textContent = `${Math.round(currentScale * 100)}%`;
+    if (pdfCurrentScalePercent >= 300) return;
+    pdfCurrentScalePercent = Math.min(300, pdfCurrentScalePercent + 25);
+    pdfZoomLevel.textContent = `${pdfCurrentScalePercent}%`;
     reRenderAllPages();
 }
 
 function zoomOut() {
-    if (currentScale <= 0.25) return;
-    currentScale = Math.round((currentScale - 0.25) * 100) / 100;
-    pdfZoomLevel.textContent = `${Math.round(currentScale * 100)}%`;
+    if (pdfCurrentScalePercent <= 25) return;
+    pdfCurrentScalePercent = Math.max(25, pdfCurrentScalePercent - 25);
+    pdfZoomLevel.textContent = `${pdfCurrentScalePercent}%`;
     reRenderAllPages();
 }
 
@@ -822,9 +860,13 @@ document.addEventListener('keydown', (e) => {
 let resizeTimeout = null;
 window.addEventListener('resize', () => {
     if (resizeTimeout) clearTimeout(resizeTimeout);
-    resizeTimeout = setTimeout(() => {
+    resizeTimeout = setTimeout(async () => {
         if (treeScreen.classList.contains('active') && currentTreeData) {
             renderTree(currentTreeData);
+        }
+        if (pdfOverlay.classList.contains('active') && pdfDoc) {
+            await calculateBaseScale();
+            reRenderAllPages();
         }
     }, 250);
 });

@@ -588,10 +588,10 @@ async def get_tree(job_id: str):
 
 @app.get("/")
 async def index():
-    return FileResponse("public/index.html")
+    return FileResponse("src/index.html")
 
 
-app.mount("/public", StaticFiles(directory="src"), name="static")
+app.mount("/src", StaticFiles(directory="src"), name="static")
 
 if __name__ == "__main__":
     import uvicorn
