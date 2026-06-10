@@ -591,7 +591,7 @@ async def index():
     return FileResponse("public/index.html")
 
 
-app.mount("/public", StaticFiles(directory="public"), name="static")
+app.mount("/public", StaticFiles(directory="src"), name="static")
 
 if __name__ == "__main__":
     import uvicorn
