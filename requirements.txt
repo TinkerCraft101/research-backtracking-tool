@@ -1,4 +1,5 @@
 a2wsgi==1.10.10
+python-dotenv==1.2.2
 attr==0.3.2
 brotli==1.2.0
 brotlicffi==1.2.0.1

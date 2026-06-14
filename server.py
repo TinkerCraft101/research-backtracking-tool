@@ -16,6 +16,7 @@ from datetime import datetime
 
 import fitz
 import httpx
+from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -30,6 +31,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+load_dotenv()
+S2_API_KEY = os.getenv("S2_API_KEY", "")
 
 LIBRARY_DIR = Path("library")
 ROOT_DIR = LIBRARY_DIR / "root"
@@ -160,6 +164,9 @@ ARXIV_NS = {"atom": "http://www.w3.org/2005/Atom"}
 
 async def search_semantic_scholar(title: str, client: httpx.AsyncClient) -> dict | None:
     try:
+        headers = {}
+        if S2_API_KEY:
+            headers["x-api-key"] = S2_API_KEY
         resp = await client.get(
             "https://api.semanticscholar.org/graph/v1/paper/search",
             params={
@@ -167,6 +174,7 @@ async def search_semantic_scholar(title: str, client: httpx.AsyncClient) -> dict
                 "fields": "title,authors,year,openAccessPdf,url,externalIds",
                 "limit": 1,
             },
+            headers=headers,
             timeout=15.0,
         )
         if resp.status_code == 429:
@@ -181,11 +189,18 @@ async def search_semantic_scholar(title: str, client: httpx.AsyncClient) -> dict
         return None
 
 
-async def search_arxiv(title: str, client: httpx.AsyncClient) -> dict | None:
+async def search_arxiv(title: str, client: httpx.AsyncClient, arxiv_id: str | None = None) -> dict | None:
+    """Search arXiv API. If arxiv_id is given, fetches that paper directly."""
     try:
+        params = {"max_results": 1}
+        if arxiv_id:
+            params["id_list"] = arxiv_id
+        else:
+            params["search_query"] = f'all:"{title[:200]}"'
+
         resp = await client.get(
             "https://export.arxiv.org/api/query",
-            params={"search_query": f'all:"{title[:200]}"', "max_results": 1},
+            params=params,
             timeout=15.0,
         )
         if resp.status_code != 200:
@@ -198,7 +213,6 @@ async def search_arxiv(title: str, client: httpx.AsyncClient) -> dict | None:
 
         title_el = entry.find("atom:title", ARXIV_NS)
         paper_title = title_el.text.strip() if title_el is not None and title_el.text else title
-        # arXiv titles often have newlines
         paper_title = re.sub(r'\s+', ' ', paper_title)
 
         id_el = entry.find("atom:id", ARXIV_NS)
@@ -222,6 +236,34 @@ async def search_arxiv(title: str, client: httpx.AsyncClient) -> dict | None:
         }
     except Exception:
         return None
+
+
+def _arxiv_flexible_queries(title: str) -> list[str]:
+    """Generate flexible search strategies for arXiv."""
+    strategies = [title.strip()]
+    t = title.strip()
+
+    # Remove subtitle after colon or period
+    for sep in [": ", ".\n", ". "]:
+        idx = t.find(sep)
+        if idx > 20:
+            strategies.append(t[:idx])
+            break
+
+    # First 4-5 significant words
+    words = [w for w in t.split() if len(w) > 2]
+    if len(words) > 5:
+        strategies.append(" ".join(words[:5]))
+    elif len(words) > 3:
+        strategies.append(" ".join(words[:4]))
+
+    # Remove parenthesized parts (year, etc.)
+    cleaned = re.sub(r'\([^)]*\)', '', t).strip()
+    if cleaned != t and len(cleaned) > 15:
+        strategies.append(cleaned)
+
+    seen = set()
+    return [s for s in strategies if not (s in seen or seen.add(s))]
 
 
 def _generate_queries(title: str) -> list[str]:
@@ -263,34 +305,39 @@ def _generate_queries(title: str) -> list[str]:
 
 
 async def search_paper(title: str, client: httpx.AsyncClient) -> dict:
-    """Search across multiple sources with query retry."""
+    """Search across multiple sources with query retry and flexible arXiv fallback."""
     queries = _generate_queries(title)
 
     for q in queries:
-        # Try Semantic Scholar
         result = await search_semantic_scholar(q, client)
         if result and not result.get("rate_limited"):
-            return {
+            paper = {
                 "title": result.get("title", title),
                 "authors": [a.get("name", "") for a in (result.get("authors") or [])[:3]],
                 "year": result.get("year"),
                 "paper_url": result.get("url", ""),
                 "openAccessPdf": result.get("openAccessPdf"),
             }
+            # If S2 knows the paper but has no openAccessPdf, check for arXiv ID
+            ext_ids = result.get("externalIds") or {}
+            if not paper["openAccessPdf"] and ext_ids.get("ArXiv"):
+                pdf_url = f"https://arxiv.org/pdf/{ext_ids['ArXiv']}.pdf"
+                paper["openAccessPdf"] = {"url": pdf_url}
+            return paper
         if result and result.get("rate_limited"):
-            continue  # try next query
+            continue
 
-    # Try arXiv with best query
-    best_q = next((q for q in queries if len(q) < 200), title[:200])
-    result = await search_arxiv(best_q, client)
-    if result and result.get("openAccessPdf"):
-        return {
-            "title": result.get("title", title),
-            "authors": [],
-            "year": None,
-            "paper_url": result.get("url", ""),
-            "openAccessPdf": result.get("openAccessPdf"),
-        }
+    # Fallback: try arXiv with flexible strategies
+    for query in _arxiv_flexible_queries(title):
+        result = await search_arxiv(query, client)
+        if result and result.get("openAccessPdf"):
+            return {
+                "title": result.get("title", title),
+                "authors": [],
+                "year": None,
+                "paper_url": result.get("url", ""),
+                "openAccessPdf": result.get("openAccessPdf"),
+            }
 
     return {"title": title, "not_found": True}
 
