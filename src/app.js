@@ -573,22 +573,22 @@ async function loadPdfDocument(url) {
         pdfPagesData = [];
         pdfPages.innerHTML = '';
         pdfPageInfo.textContent = `1 / ${pdfDoc.numPages}`;
+        await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
         await calculateBaseScale();
-        renderAllPages();
+        await renderAllPages();
     } catch (err) {
         pdfPages.innerHTML = '<div class="pdf-loading">Failed to load PDF</div>';
     }
 }
 
-function calculateBaseScale() {
-    if (!pdfDoc) return Promise.resolve();
-    return pdfDoc.getPage(1).then((p) => {
-        const viewport = p.getViewport({ scale: 1.0 });
-        const availableWidth = pdfBody.clientWidth - 80;
-        pdfBaseScale = availableWidth / viewport.width;
-        pdfCurrentScalePercent = 100;
-        pdfZoomLevel.textContent = '100%';
-    });
+async function calculateBaseScale() {
+    if (!pdfDoc) return;
+    const p = await pdfDoc.getPage(1);
+    const viewport = p.getViewport({ scale: 1.0 });
+    const w = pdfBody.clientWidth || (window.innerWidth - 40);
+    pdfBaseScale = (w - 80) / viewport.width;
+    pdfCurrentScalePercent = 100;
+    pdfZoomLevel.textContent = '100%';
 }
 
 function getPdfScale() {
@@ -866,7 +866,7 @@ window.addEventListener('resize', () => {
         }
         if (pdfOverlay.classList.contains('active') && pdfDoc) {
             await calculateBaseScale();
-            reRenderAllPages();
+            await reRenderAllPages();
         }
     }, 250);
 });
