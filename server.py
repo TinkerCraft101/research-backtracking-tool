@@ -75,7 +75,7 @@ def extract_paper_title(text: str) -> str:
 
 # ─── Reference Extraction ────────────────────────────────────────────
 
-def extract_references(text: str, is_test_ref: bool = False) -> list[str]:
+def extract_references(text: str) -> list[str]:
     ref_match = re.search(
         r'(?:^|\n)\s*(?:References|Bibliography|REFERENCES|BIBLIOGRAPHY)\s*\n',
         text
@@ -101,9 +101,6 @@ def extract_references(text: str, is_test_ref: bool = False) -> list[str]:
         title = _extract_title_from_ref(ref)
         if title and len(title) > 5:
             titles.append(title)
-
-    if is_test_ref:
-        return titles[:3]
 
     return titles
 
@@ -321,7 +318,6 @@ async def process_node(
     max_depth: int,
     root_name: str,
     client: httpx.AsyncClient,
-    is_test_ref: bool = False,
 ) -> list[dict]:
     """Recursively process references at a given depth level."""
     job = jobs[job_id]
@@ -386,11 +382,11 @@ async def process_node(
                 if depth < max_depth:
                     try:
                         text = extract_text_from_pdf(str(save_path))
-                        sub_refs = extract_references(text, is_test_ref)
+                        sub_refs = extract_references(text)
                         if sub_refs:
                             sub_children = await process_node(
                                 job_id, sub_refs, depth + 1, max_depth,
-                                root_name, client, is_test_ref
+                                root_name, client
                             )
                             child["children"] = sub_children
                     except Exception as e:
@@ -406,14 +402,14 @@ async def process_node(
 
 # ─── Background Job ───────────────────────────────────────────────────
 
-async def run_job(job_id: str, pdf_path: str, max_depth: int, is_test_ref: bool = False):
+async def run_job(job_id: str, pdf_path: str, max_depth: int):
     """Background task: build the full citation tree."""
     job = jobs[job_id]
 
     try:
         text = extract_text_from_pdf(pdf_path)
         title = extract_paper_title(text)
-        references = extract_references(text, is_test_ref)
+        references = extract_references(text)
     except Exception as e:
         job["status"] = "error"
         job["message"] = f"Failed to parse PDF: {str(e)}"
@@ -449,7 +445,7 @@ async def run_job(job_id: str, pdf_path: str, max_depth: int, is_test_ref: bool 
     async with httpx.AsyncClient() as client:
         children = await process_node(
             job_id, references, depth=1, max_depth=max_depth,
-            root_name=root_name, client=client, is_test_ref=is_test_ref
+            root_name=root_name, client=client
         )
 
     dl_count = sum(1 for c in _count_nodes(children) if c["status"] == "downloaded")
@@ -490,7 +486,6 @@ def _count_nodes(nodes: list[dict]) -> list[dict]:
 async def upload_paper(
     file: UploadFile = File(...),
     depth: int = Query(2, ge=1, le=5, description="Tree depth (1=root→refs, 2=root→refs→subrefs, ...)"),
-    is_test_ref: bool = Query(False, description="Limit to 3 refs per paper for testing"),
 ):
     """Upload a PDF and recursively build a citation tree."""
     if not file.filename.lower().endswith('.pdf'):
@@ -506,7 +501,7 @@ async def upload_paper(
     try:
         text = extract_text_from_pdf(temp_path)
         title = extract_paper_title(text)
-        references = extract_references(text, is_test_ref)
+        references = extract_references(text)
     except Exception as e:
         os.remove(temp_path)
         raise HTTPException(status_code=500, detail=f"Failed to parse PDF: {str(e)}")
@@ -523,7 +518,7 @@ async def upload_paper(
     }
 
     # Launch background job with depth parameter
-    asyncio.create_task(run_job(job_id, temp_path, max_depth=depth, is_test_ref=is_test_ref))
+    asyncio.create_task(run_job(job_id, temp_path, max_depth=depth))
 
     return {
         "job_id": job_id,
