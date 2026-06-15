@@ -16,7 +16,6 @@ from datetime import datetime
 
 import fitz
 import httpx
-from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -31,9 +30,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-load_dotenv()
-S2_API_KEY = os.getenv("S2_API_KEY", "")
 
 LIBRARY_DIR = Path("library")
 ROOT_DIR = LIBRARY_DIR / "root"
@@ -160,59 +156,46 @@ def _extract_title_from_ref(ref: str) -> str:
 # ─── Multi-Source Search ─────────────────────────────────────────────
 
 ARXIV_NS = {"atom": "http://www.w3.org/2005/Atom"}
+UNPAYWALL_EMAIL = "research@example.com"
 
 
-async def search_semantic_scholar(title: str, client: httpx.AsyncClient) -> dict | None:
+def _arxiv_query_variants(title: str) -> list[str]:
+    """Generate multiple query variants for flexible arXiv searching."""
+    variants = [title.strip()]
+    t = title.strip()
+
+    # Remove subtitle after colon
+    idx = t.find(": ")
+    if 20 < idx < len(t) - 10:
+        variants.append(t[:idx])
+
+    # First 4-5 significant words
+    words = [w for w in t.split() if len(w) > 2]
+    if len(words) > 5:
+        variants.append(" ".join(words[:5]))
+    elif len(words) > 3:
+        variants.append(" ".join(words[:4]))
+
+    # Remove parenthesized parts
+    cleaned = re.sub(r'\([^)]*\)', '', t).strip()
+    if cleaned != t and len(cleaned) > 15:
+        variants.append(cleaned)
+
+    # Remove leading numbering/authors
+    cleaned = re.sub(r'^\[?\d+\]?[.\s)]*', '', t).strip()
+    cleaned = re.sub(r'^[A-Z][a-z]+,\s*[A-Z][a-z]+.*?,\s+', '', cleaned).strip()
+    if cleaned != t and len(cleaned) > 10:
+        variants.append(cleaned)
+
+    seen = set()
+    return [s for s in variants if not (s in seen or seen.add(s))]
+
+
+def _parse_arxiv_entry(entry) -> dict | None:
+    """Parse a single arXiv Atom entry into a paper dict."""
     try:
-        headers = {}
-        if S2_API_KEY:
-            headers["x-api-key"] = S2_API_KEY
-        resp = await client.get(
-            "https://api.semanticscholar.org/graph/v1/paper/search",
-            params={
-                "query": title[:200],
-                "fields": "title,authors,year,openAccessPdf,url,externalIds",
-                "limit": 1,
-            },
-            headers=headers,
-            timeout=15.0,
-        )
-        if resp.status_code == 429:
-            return {"rate_limited": True}
-        if resp.status_code != 200:
-            return None
-        data = resp.json()
-        if data.get("data") and len(data["data"]) > 0:
-            return data["data"][0]
-        return None
-    except Exception:
-        return None
-
-
-async def search_arxiv(title: str, client: httpx.AsyncClient, arxiv_id: str | None = None) -> dict | None:
-    """Search arXiv API. If arxiv_id is given, fetches that paper directly."""
-    try:
-        params = {"max_results": 1}
-        if arxiv_id:
-            params["id_list"] = arxiv_id
-        else:
-            params["search_query"] = f'all:"{title[:200]}"'
-
-        resp = await client.get(
-            "https://export.arxiv.org/api/query",
-            params=params,
-            timeout=15.0,
-        )
-        if resp.status_code != 200:
-            return None
-
-        root = ET.fromstring(resp.text)
-        entry = root.find("atom:entry", ARXIV_NS)
-        if entry is None:
-            return None
-
         title_el = entry.find("atom:title", ARXIV_NS)
-        paper_title = title_el.text.strip() if title_el is not None and title_el.text else title
+        paper_title = title_el.text.strip() if title_el is not None and title_el.text else ""
         paper_title = re.sub(r'\s+', ' ', paper_title)
 
         id_el = entry.find("atom:id", ARXIV_NS)
@@ -229,115 +212,178 @@ async def search_arxiv(title: str, client: httpx.AsyncClient, arxiv_id: str | No
                     pdf_link = link.get("href")
                     break
 
+        if not paper_title or not pdf_link:
+            return None
+
+        # Extract author names
+        authors = []
+        for author_el in entry.findall("atom:author", ARXIV_NS):
+            name_el = author_el.find("atom:name", ARXIV_NS)
+            if name_el is not None and name_el.text:
+                authors.append(name_el.text.strip())
+
+        # Extract year from published date
+        pub_el = entry.find("atom:published", ARXIV_NS)
+        year = pub_el.text[:4] if pub_el is not None and pub_el.text else None
+
         return {
             "title": paper_title,
-            "openAccessPdf": {"url": pdf_link} if pdf_link else None,
-            "url": paper_url,
+            "authors": authors[:3],
+            "year": year,
+            "paper_url": paper_url,
+            "openAccessPdf": {"url": pdf_link},
         }
     except Exception:
         return None
 
 
-def _arxiv_flexible_queries(title: str) -> list[str]:
-    """Generate flexible search strategies for arXiv."""
-    strategies = [title.strip()]
-    t = title.strip()
-
-    # Remove subtitle after colon or period
-    for sep in [": ", ".\n", ". "]:
-        idx = t.find(sep)
-        if idx > 20:
-            strategies.append(t[:idx])
-            break
-
-    # First 4-5 significant words
-    words = [w for w in t.split() if len(w) > 2]
-    if len(words) > 5:
-        strategies.append(" ".join(words[:5]))
-    elif len(words) > 3:
-        strategies.append(" ".join(words[:4]))
-
-    # Remove parenthesized parts (year, etc.)
-    cleaned = re.sub(r'\([^)]*\)', '', t).strip()
-    if cleaned != t and len(cleaned) > 15:
-        strategies.append(cleaned)
-
-    seen = set()
-    return [s for s in strategies if not (s in seen or seen.add(s))]
+def _title_similarity(a: str, b: str) -> float:
+    """Simple word-overlap similarity between two title strings."""
+    a_words = set(a.lower().split())
+    b_words = set(b.lower().split())
+    if not a_words or not b_words:
+        return 0.0
+    intersection = a_words & b_words
+    return len(intersection) / max(len(a_words), len(b_words))
 
 
-def _generate_queries(title: str) -> list[str]:
-    """Generate multiple search queries from a raw title string, best first."""
-    queries = [title.strip()]
-    t = title.strip()
+async def search_arxiv(title: str, client: httpx.AsyncClient) -> dict | None:
+    """Search arXiv with multiple flexible query strategies. No key needed."""
+    candidates = []
+    seen_ids = set()
 
-    # Remove leading numbering/authors
-    cleaned = re.sub(r'^\[?\d+\]?[.\s)]*', '', t).strip()
-    cleaned = re.sub(r'^[A-Z][a-z]+,\s*[A-Z][a-z]+.*?,\s+', '', cleaned).strip()
-    if cleaned != t and len(cleaned) > 10:
-        queries.append(cleaned)
+    for variant in _arxiv_query_variants(title):
+        try:
+            resp = await client.get(
+                "https://export.arxiv.org/api/query",
+                params={"search_query": f'all:"{variant[:200]}"', "max_results": 5},
+                timeout=15.0,
+            )
+            if resp.status_code != 200:
+                continue
 
-    # Try quoted substring
-    m = re.search(r'["\u201c](.{15,})["\u201d]', t)
-    if m:
-        queries.append(m.group(1).strip())
+            root = ET.fromstring(resp.text)
+            for entry in root.findall("atom:entry", ARXIV_NS):
+                id_el = entry.find("atom:id", ARXIV_NS)
+                entry_id = id_el.text if id_el is not None else ""
+                if entry_id in seen_ids:
+                    continue
+                seen_ids.add(entry_id)
 
-    # Try after year
-    m = re.search(r'(?:19|20)\d{2}[.,\s]+(.{15,})', t)
-    if m:
-        queries.append(m.group(1).strip())
+                paper = _parse_arxiv_entry(entry)
+                if paper and paper.get("openAccessPdf"):
+                    candidates.append(paper)
+        except Exception:
+            continue
 
-    # First sentence after a period
-    m = re.search(r'\.\s+([A-Z][^.]{15,})', t)
-    if m:
-        queries.append(m.group(1).strip())
+    if not candidates:
+        return None
 
-    # Shorten long queries: first 80 chars
-    if len(t) > 80:
-        queries.append(t[:80].strip())
+    # Pick best match by title similarity
+    candidates.sort(key=lambda p: _title_similarity(title, p["title"]), reverse=True)
+    return candidates[0]
 
-    # Title-case part
-    m = re.search(r'([A-Z][A-Za-z0-9\s:;,]{20,60})', t)
-    if m and len(m.group(1)) > 15:
-        queries.append(m.group(1).strip())
 
-    return list(dict.fromkeys(q for q in queries if len(q) > 15))
+async def search_openalex(title: str, client: httpx.AsyncClient) -> dict | None:
+    """Search OpenAlex by title. No key needed, generous rate limits."""
+    try:
+        resp = await client.get(
+            "https://api.openalex.org/works",
+            params={
+                "search": title[:300],
+                "per_page": 5,
+                "select": "title,authorships,publication_year,doi,primary_location,best_oa_location,open_access",
+            },
+            timeout=15.0,
+        )
+        if resp.status_code != 200:
+            return None
+
+        data = resp.json()
+        results = data.get("results", [])
+        if not results:
+            return None
+
+        # Sort by relevance (OpenAlex returns best first, but double-check with title similarity)
+        best = max(results, key=lambda r: _title_similarity(title, r.get("title", "")))
+
+        paper_title = best.get("title", title)
+        authors = []
+        for a in (best.get("authorships") or [])[:3]:
+            if a.get("author", {}).get("display_name"):
+                authors.append(a["author"]["display_name"])
+
+        doi = best.get("doi")
+        oa_location = best.get("best_oa_location") or {}
+        pdf_url = oa_location.get("pdf_url")
+
+        return {
+            "title": paper_title,
+            "authors": authors,
+            "year": best.get("publication_year"),
+            "paper_url": doi or "",
+            "doi": doi,
+            "openAccessPdf": {"url": pdf_url} if pdf_url else None,
+        }
+    except Exception:
+        return None
+
+
+async def search_unpaywall(doi: str, client: httpx.AsyncClient) -> str | None:
+    """Check Unpaywall for an OA copy via DOI. No key needed (just an email param)."""
+    try:
+        resp = await client.get(
+            f"https://api.unpaywall.org/v2/{doi}?email={UNPAYWALL_EMAIL}",
+            timeout=15.0,
+        )
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        best_loc = data.get("best_oa_location") or {}
+        pdf_url = best_loc.get("url_for_pdf")
+        return pdf_url
+    except Exception:
+        return None
 
 
 async def search_paper(title: str, client: httpx.AsyncClient) -> dict:
-    """Search across multiple sources with query retry and flexible arXiv fallback."""
-    queries = _generate_queries(title)
+    """Search across arXiv → OpenAlex → Unpaywall. No API keys needed."""
+    # 1. Try arXiv first (flexible, covers most ML/CS papers)
+    arxiv_result = await search_arxiv(title, client)
+    if arxiv_result and arxiv_result.get("openAccessPdf"):
+        return arxiv_result
 
-    for q in queries:
-        result = await search_semantic_scholar(q, client)
-        if result and not result.get("rate_limited"):
-            paper = {
-                "title": result.get("title", title),
-                "authors": [a.get("name", "") for a in (result.get("authors") or [])[:3]],
-                "year": result.get("year"),
-                "paper_url": result.get("url", ""),
-                "openAccessPdf": result.get("openAccessPdf"),
-            }
-            # If S2 knows the paper but has no openAccessPdf, check for arXiv ID
-            ext_ids = result.get("externalIds") or {}
-            if not paper["openAccessPdf"] and ext_ids.get("ArXiv"):
-                pdf_url = f"https://arxiv.org/pdf/{ext_ids['ArXiv']}.pdf"
-                paper["openAccessPdf"] = {"url": pdf_url}
-            return paper
-        if result and result.get("rate_limited"):
-            continue
-
-    # Fallback: try arXiv with flexible strategies
-    for query in _arxiv_flexible_queries(title):
-        result = await search_arxiv(query, client)
-        if result and result.get("openAccessPdf"):
+    # 2. Try OpenAlex (covers ACL, JMLR, NeurIPS, journal venues, etc.)
+    oa_result = await search_openalex(title, client)
+    if oa_result:
+        # OpenAlex found a PDF directly
+        if oa_result.get("openAccessPdf"):
             return {
-                "title": result.get("title", title),
-                "authors": [],
-                "year": None,
-                "paper_url": result.get("url", ""),
-                "openAccessPdf": result.get("openAccessPdf"),
+                "title": oa_result["title"],
+                "authors": oa_result["authors"],
+                "year": oa_result["year"],
+                "paper_url": oa_result["paper_url"],
+                "openAccessPdf": oa_result["openAccessPdf"],
             }
+        # OpenAlex found the paper but no PDF — try Unpaywall via DOI
+        if oa_result.get("doi"):
+            pdf_url = await search_unpaywall(oa_result["doi"], client)
+            if pdf_url:
+                return {
+                    "title": oa_result["title"],
+                    "authors": oa_result["authors"],
+                    "year": oa_result["year"],
+                    "paper_url": oa_result["paper_url"],
+                    "openAccessPdf": {"url": pdf_url},
+                }
+        # Paper identified but no OA copy available
+        return {
+            "title": oa_result["title"],
+            "authors": oa_result["authors"],
+            "year": oa_result["year"],
+            "paper_url": oa_result["paper_url"],
+            "openAccessPdf": None,
+        }
 
     return {"title": title, "not_found": True}
 
