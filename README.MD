@@ -1,8 +1,13 @@
 # Research Tree
 
-This is a research backtracking tool, it takes your uploaded paper (root) -> parses reference section -> displays all reference papers (branchs) and each of their reference papers (leafs)
+This is a research backtracking tool, it takes your uploaded paper (root) -> parses reference section -> displays all reference papers (branchs) and each of their reference papers (leafs). 
 
-features - 
+Discalimer 
+
+This repository is still in it's building phase and its prue to errors. do use this with causion. 
+The README is incomplete as the repository is still in building phase.
+
+## Features 
  - pdf viewer
  - custom depth
  - bgm
@@ -11,3 +16,18 @@ features -
  - knowledge base per shelf
  - chat history/persistent
  
+
+## How it works
+
+1. Parses user uploaded research paper to collect all the reference papers.
+2. searches semantic scholar using the DOI and downloads the pdf. 
+3. displays the connectiong between papers as tree structure
+4. clicking on the paper allows for viewing them 
+
+
+## TODO
+- [ ] tool to parse the paper and collect research papers
+- [ ] display them in tree structure
+- [ ] add clickable pdf viewer
+- [ ] building a loging section
+- [ ] configuration popup
