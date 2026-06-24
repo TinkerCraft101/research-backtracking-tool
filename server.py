@@ -471,12 +471,13 @@ async def process_node(
                 child["folder"] = str(save_dir.relative_to(LIBRARY_DIR))
                 child["status"] = "downloaded"
 
-                # Recurse into this paper's references
+                # Recurse into this paper's references (cap at 4 per node)
                 if depth < max_depth:
                     try:
                         text = extract_text_from_pdf(str(save_path))
                         sub_refs = extract_references(text)
                         if sub_refs:
+                            sub_refs = sub_refs[:4]
                             sub_children = await process_node(
                                 job_id, sub_refs, depth + 1, max_depth,
                                 root_name, client
