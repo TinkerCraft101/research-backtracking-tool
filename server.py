@@ -436,6 +436,7 @@ async def process_node(
                 "paper_url": None,
                 "status": "not_found",
                 "children": [],
+                "depth": depth,
             })
             await asyncio.sleep(0.5)
             continue
@@ -449,6 +450,7 @@ async def process_node(
             "paper_url": paper.get("paper_url", ""),
             "status": "found",
             "children": [],
+            "depth": depth,
         }
 
         # Try to download PDF
@@ -491,6 +493,8 @@ async def process_node(
         children.append(child)
         await asyncio.sleep(0.8)
 
+    for child in children:
+        _add_subtree_size(child)
     return children
 
 
@@ -526,14 +530,15 @@ async def run_job(job_id: str, pdf_path: str, max_depth: int):
     if not references:
         job["status"] = "done"
         job["message"] = "No references found in this paper."
-        job["tree_data"] = {
-            "root": {
-                "title": title,
-                "filename": f"{root_name}.pdf",
-                "folder": str(root_save_dir.relative_to(LIBRARY_DIR)),
-                "children": [],
-            }
+        root_node = {
+            "title": title,
+            "filename": f"{root_name}.pdf",
+            "folder": str(root_save_dir.relative_to(LIBRARY_DIR)),
+            "children": [],
+            "depth": 0,
         }
+        _add_subtree_size(root_node)
+        job["tree_data"] = {"root": root_node}
         return
 
     async with httpx.AsyncClient() as client:
@@ -546,13 +551,16 @@ async def run_job(job_id: str, pdf_path: str, max_depth: int):
     pw_count = sum(1 for c in _count_nodes(children) if c["status"] == "paywalled")
     nf_count = sum(1 for c in _count_nodes(children) if c["status"] == "not_found")
 
+    root_node = {
+        "title": title,
+        "filename": f"{root_name}.pdf",
+        "folder": str(root_save_dir.relative_to(LIBRARY_DIR)),
+        "children": children,
+        "depth": 0,
+    }
+    _add_subtree_size(root_node)
     job["tree_data"] = {
-        "root": {
-            "title": title,
-            "filename": f"{root_name}.pdf",
-            "folder": str(root_save_dir.relative_to(LIBRARY_DIR)),
-            "children": children,
-        },
+        "root": root_node,
         "stats": {
             "total": job["total"],
             "downloaded": dl_count,
@@ -572,6 +580,15 @@ def _count_nodes(nodes: list[dict]) -> list[dict]:
         if n.get("children"):
             result.extend(_count_nodes(n["children"]))
     return result
+
+
+def _add_subtree_size(node: dict) -> int:
+    """Recursively compute and set subtreeSize on each node (includes self)."""
+    size = 1
+    for child in node.get("children", []):
+        size += _add_subtree_size(child)
+    node["subtreeSize"] = size
+    return size
 
 
 # ─── API Endpoints ────────────────────────────────────────────────────

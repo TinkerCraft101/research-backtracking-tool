@@ -172,19 +172,51 @@ function trackProgress(jobId) {
     };
 }
 
-// ─── Tree Rendering (D3.js) ──────────────────────────────────────────
+// ─── Tree Rendering (D3.js) — Radial + Semantic Zoom + Clusters ─────
 
-const TREE_NODE_W = 240;
-const TREE_NODE_H = 100;
-const TREE_NODE_GAP_X = 20;
-const TREE_NODE_GAP_Y = 60;
+const RADIAL_NODE_W = 190;
+const RADIAL_NODE_H = 74;
+const CLUSTER_INNER_R = 14;
+const CLUSTER_OUTER_R = 22;
 
 let currentZoom = null;
+let currentZoomTransform = null;
+let cachedAllNodes = [];
+let cachedNodeGroup = null;
+let cachedLinkGroup = null;
+let cachedZoomLevelId = -1;
+let cachedCenterX = 0;
+let cachedCenterY = 0;
+
+const ZOOM_LEVELS = [
+    { maxScale: 0.3,  maxDepth: 0, label: 'Continent' },
+    { maxScale: 0.7,  maxDepth: 1, label: 'Country' },
+    { maxScale: 1.5,  maxDepth: 2, label: 'City' },
+    { maxScale: Infinity, maxDepth: Infinity, label: 'Street' },
+];
+
+const STATUS_COLORS = {
+    downloaded: '#34d399',
+    paywalled: '#fbbf24',
+    not_found: '#f87171',
+    found: '#60a5fa',
+};
+
+function getZoomLevel(scale) {
+    for (let i = 0; i < ZOOM_LEVELS.length; i++) {
+        if (scale <= ZOOM_LEVELS[i].maxScale) return i;
+    }
+    return ZOOM_LEVELS.length - 1;
+}
+
+function getZoomLevelInfo(id) {
+    return ZOOM_LEVELS[id] || ZOOM_LEVELS[ZOOM_LEVELS.length - 1];
+}
 
 function renderTree(data) {
     const { root, stats } = data;
 
-    treeStats.textContent = `${stats.downloaded} downloaded · ${stats.paywalled} paywalled · ${stats.not_found} not found · ${stats.total} refs`;
+    treeStats.textContent = `${stats.downloaded} downloaded \u00B7 ${stats.paywalled} paywalled \u00B7 ${stats.not_found} not found \u00B7 ${stats.total} refs`;
 
     treeContainer.innerHTML = '';
 
@@ -192,72 +224,61 @@ function renderTree(data) {
     const containerW = scrollEl.clientWidth;
     const containerH = scrollEl.clientHeight - 56;
 
-    const svg = d3.select(treeContainer)
-        .append('svg')
+    cachedCenterX = containerW / 2;
+    cachedCenterY = containerH / 2;
+
+    const svg = d3.select(treeContainer).append('svg')
         .attr('width', containerW)
         .attr('height', containerH)
         .style('cursor', 'grab');
 
     const g = svg.append('g');
-
     const zoom = d3.zoom()
-        .scaleExtent([0.1, 4])
+        .scaleExtent([0.1, 6])
         .on('zoom', (event) => {
+            currentZoomTransform = event.transform;
             g.attr('transform', event.transform);
             svg.style('cursor', event.sourceEvent ? 'grabbing' : 'grab');
+            onZoomTransform(event.transform.k);
         });
 
     currentZoom = zoom;
     svg.call(zoom);
 
     const d3Root = d3.hierarchy(root);
-    const nodeCount = d3Root.descendants().length;
+    const allNodes = d3Root.descendants();
+    if (allNodes.length === 0) return;
 
-    if (nodeCount === 0) return;
-
-    if (nodeCount === 1) {
-        renderSingleNode(g, d3Root, containerW, containerH, zoom, svg);
+    if (allNodes.length === 1) {
+        renderSingleRadialNode(g, d3Root, containerW, containerH, zoom, svg);
         return;
     }
 
-    const leafCount = d3Root.leaves().length;
-    const treeW = Math.max(containerW - 100, leafCount * (TREE_NODE_W + TREE_NODE_GAP_X));
-    const treeH = containerH - 120;
-
+    const maxRadius = Math.max(containerW, containerH) * 0.45;
     const treeLayout = d3.tree()
-        .size([treeW, treeH])
-        .separation((a, b) => {
-            if (a.parent === b.parent) return 1;
-            return 1.5;
-        });
+        .size([2 * Math.PI, maxRadius])
+        .separation((a, b) => (a.parent === b.parent ? 1 : 1.2));
 
     treeLayout(d3Root);
 
-    const allNodes = d3Root.descendants();
+    allNodes.forEach(d => {
+        const angle = d.x - Math.PI / 2;
+        d.px = cachedCenterX + d.y * Math.cos(angle);
+        d.py = cachedCenterY + d.y * Math.sin(angle);
+    });
+
+    cachedAllNodes = allNodes;
+
+    cachedLinkGroup = g.append('g').attr('class', 'd3-links');
     const allLinks = d3Root.links();
-
-    const minX = d3.min(allNodes, d => d.x);
-    const maxX = d3.max(allNodes, d => d.x);
-    const treeWidth = maxX - minX + TREE_NODE_W + 100;
-    const treeHeight = d3.max(allNodes, d => d.y) + TREE_NODE_H + 100;
-
-    const offsetX = -minX + treeWidth / 2;
-    const offsetY = 60;
-
-    g.attr('transform', `translate(${offsetX}, ${offsetY})`);
-
-    const linkGroup = g.append('g').attr('class', 'd3-links');
-    const nodeGroup = g.append('g').attr('class', 'd3-nodes');
-
-    linkGroup.selectAll('path')
+    cachedLinkGroup.selectAll('path')
         .data(allLinks)
         .join('path')
         .attr('class', 'd3-link')
-        .attr('d', (d) => {
-            return `M${d.source.x},${d.source.y + TREE_NODE_H / 2}
-                    C${d.source.x},${(d.source.y + d.target.y) / 2}
-                     ${d.target.x},${(d.source.y + d.target.y) / 2}
-                     ${d.target.x},${d.target.y - TREE_NODE_H / 2}`;
+        .attr('d', d => {
+            const mx = (d.source.px + d.target.px) / 2;
+            const my = (d.source.py + d.target.py) / 2;
+            return `M${d.source.px},${d.source.py} Q${mx},${my} ${d.target.px},${d.target.py}`;
         })
         .style('opacity', 0)
         .transition()
@@ -265,17 +286,18 @@ function renderTree(data) {
         .delay((d, i) => 200 + i * 30)
         .style('opacity', 1);
 
-    const nodeGs = nodeGroup.selectAll('g')
+    cachedNodeGroup = g.append('g').attr('class', 'd3-nodes');
+    const nodeGs = cachedNodeGroup.selectAll('g')
         .data(allNodes)
         .join('g')
         .attr('class', d => {
-            const depth = d.depth;
-            if (depth === 0) return 'd3-node d3-node-root';
-            if (d.children && d.children.length > 0) return 'd3-node d3-node-branch';
-            return 'd3-node d3-node-leaf';
+            if (d.depth === 0) return 'd3-node-group d3-node-root';
+            return (d.data.children && d.data.children.length > 0)
+                ? 'd3-node-group d3-node-branch' : 'd3-node-group d3-node-leaf';
         })
-        .attr('transform', d => `translate(${d.x - TREE_NODE_W / 2}, ${d.y - TREE_NODE_H / 2})`)
+        .attr('transform', d => `translate(${d.px}, ${d.py})`)
         .style('cursor', 'pointer')
+        .style('opacity', 0)
         .on('click', (event, d) => {
             event.stopPropagation();
             const nodeData = d.data;
@@ -284,269 +306,247 @@ function renderTree(data) {
             } else if (nodeData.paper_url && d.depth > 0) {
                 window.open(nodeData.paper_url, '_blank');
             }
-        })
-        .style('opacity', 0);
+        });
 
     nodeGs.transition()
         .duration(600)
         .delay((d, i) => 100 + d.depth * 200 + i * 40)
         .style('opacity', 1);
 
-    nodeGs.each(function(d) {
-        const el = d3.select(this);
-        const nodeData = d.data;
-        const isRoot = d.depth === 0;
-        const hasChildren = d.children && d.children.length > 0;
-        const status = nodeData.status || 'found';
+    nodeGs.each(function(d) { renderRadialNodeContent(d3.select(this), d); });
 
-        let strokeColor = 'rgba(255,255,255,0.1)';
-        let bgColor = 'rgba(255,255,255,0.04)';
-        let opacity = 1;
+    cachedZoomLevelId = -1;
+    onZoomTransform(1);
 
-        if (isRoot) {
-            strokeColor = 'rgba(0,212,255,0.3)';
-            bgColor = 'rgba(0,212,255,0.08)';
-        } else if (hasChildren) {
-            strokeColor = 'rgba(96,165,250,0.2)';
-        } else {
-            strokeColor = 'rgba(52,211,153,0.15)';
-        }
-
-        if (status === 'paywalled') opacity = 0.5;
-        if (status === 'not_found') opacity = 0.3;
-
-        el.append('rect')
-            .attr('width', TREE_NODE_W)
-            .attr('height', TREE_NODE_H)
-            .attr('rx', 10)
-            .attr('fill', bgColor)
-            .attr('stroke', strokeColor)
-            .attr('stroke-width', 1.5)
-            .style('opacity', opacity);
-
-        if (status === 'downloaded') {
-            el.append('rect')
-                .attr('width', TREE_NODE_W)
-                .attr('height', TREE_NODE_H)
-                .attr('rx', 10)
-                .attr('fill', 'none')
-                .attr('stroke', 'rgba(52,211,153,0.3)')
-                .attr('stroke-width', 1.5);
-        }
-
-        let badgeText = 'REF';
-        let badgeColor = 'rgba(52,211,153,0.15)';
-        let badgeFg = '#34d399';
-        if (isRoot) {
-            badgeText = 'PAPER';
-            badgeColor = 'rgba(0,212,255,0.15)';
-            badgeFg = '#00d4ff';
-        } else if (hasChildren) {
-            badgeText = 'BRANCH';
-            badgeColor = 'rgba(96,165,250,0.12)';
-            badgeFg = '#60a5fa';
-        }
-
-        const badge = el.append('g')
-            .attr('transform', `translate(12, 12)`);
-        badge.append('rect')
-            .attr('width', badgeText.length * 6.5 + 12)
-            .attr('height', 16)
-            .attr('rx', 4)
-            .attr('fill', badgeColor);
-        badge.append('text')
-            .attr('x', 6)
-            .attr('y', 12)
-            .attr('fill', badgeFg)
-            .attr('font-size', '9px')
-            .attr('font-weight', '600')
-            .attr('font-family', 'Inter, sans-serif')
-            .attr('letter-spacing', '0.5px')
-            .text(badgeText);
-
-        const titleText = el.append('text')
-            .attr('x', TREE_NODE_W / 2)
-            .attr('y', 44)
-            .attr('text-anchor', 'middle')
-            .attr('fill', '#f1f5f9')
-            .attr('font-size', isRoot ? '13px' : '12px')
-            .attr('font-weight', '500')
-            .attr('font-family', 'Inter, sans-serif')
-            .style('pointer-events', 'none');
-
-        const title = nodeData.title || 'Untitled';
-        const maxChars = isRoot ? 38 : 34;
-        const displayTitle = title.length > maxChars ? title.slice(0, maxChars) + '…' : title;
-        titleText.text(displayTitle);
-
-        const metaY = 60;
-        const meta = el.append('text')
-            .attr('x', TREE_NODE_W / 2)
-            .attr('y', metaY)
-            .attr('text-anchor', 'middle')
-            .attr('fill', '#475569')
-            .attr('font-size', '10px')
-            .attr('font-family', 'Inter, sans-serif')
-            .style('pointer-events', 'none');
-
-        let metaStr = '';
-        if (nodeData.year) metaStr += nodeData.year;
-        if (nodeData.authors && nodeData.authors.length > 0) {
-            const authors = nodeData.authors.slice(0, 2).join(', ');
-            if (metaStr) metaStr += ' · ';
-            metaStr += authors;
-        }
-        if (metaStr.length > 45) metaStr = metaStr.slice(0, 45) + '…';
-        meta.text(metaStr);
-
-        const footerY = TREE_NODE_H - 14;
-        let statusText = '';
-        let statusColor = '#475569';
-        if (status === 'downloaded') { statusText = '✓ PDF'; statusColor = '#34d399'; }
-        else if (status === 'paywalled') { statusText = '🔒 Paywalled'; statusColor = '#fbbf24'; }
-        else if (status === 'not_found') { statusText = '✗ Not Found'; statusColor = '#f87171'; }
-        else if (status === 'found') { statusText = '◉ Found'; statusColor = '#60a5fa'; }
-
-        if (statusText) {
-            el.append('text')
-                .attr('x', 12)
-                .attr('y', footerY)
-                .attr('fill', statusColor)
-                .attr('font-size', '9px')
-                .attr('font-weight', '600')
-                .attr('font-family', 'Inter, sans-serif')
-                .style('pointer-events', 'none')
-                .text(statusText);
-        }
-
-        if (nodeData.children && nodeData.children.length > 0) {
-            el.append('text')
-                .attr('x', TREE_NODE_W - 12)
-                .attr('y', footerY)
-                .attr('text-anchor', 'end')
-                .attr('fill', '#475569')
-                .attr('font-size', '9px')
-                .attr('font-family', 'JetBrains Mono, monospace')
-                .style('pointer-events', 'none')
-                .text(`${nodeData.children.length} refs`);
-        }
-    });
-
-    fitToScreen(svg, zoom, treeWidth, treeHeight, containerW, containerH, offsetX, offsetY);
+    fitRadialToScreen(svg, zoom, maxRadius, containerW, containerH);
 }
 
-function renderSingleNode(g, d3Root, containerW, containerH, zoom, svg) {
-    const nodeData = d3Root.data;
-    const x = 0;
-    const y = 0;
+function fitRadialToScreen(svg, zoom, maxRadius, containerW, containerH) {
+    const pad = 80;
+    const fitR = Math.min(containerW, containerH) * 0.5 - pad;
+    const scale = Math.min(1, fitR / (maxRadius + RADIAL_NODE_W));
+    svg.transition().duration(800)
+        .call(zoom.transform, d3.zoomIdentity
+            .translate(cachedCenterX, cachedCenterY)
+            .scale(scale)
+            .translate(-cachedCenterX, -cachedCenterY));
+}
 
-    const nodeG = g.append('g')
-        .attr('transform', `translate(${x - TREE_NODE_W / 2}, ${y - TREE_NODE_H / 2})`)
+function renderSingleRadialNode(g, d3Root, containerW, containerH, zoom, svg) {
+    const nodeData = d3Root.data;
+    const cx = containerW / 2, cy = containerH / 2;
+
+    const ng = g.append('g')
+        .attr('transform', `translate(${cx}, ${cy})`)
         .style('cursor', 'pointer')
         .on('click', () => {
-            if (nodeData.filename) {
-                openPdfViewer(nodeData.folder, nodeData.filename, nodeData.title);
-            }
-        })
-        .style('opacity', 0);
+            if (nodeData.filename) openPdfViewer(nodeData.folder, nodeData.filename, nodeData.title);
+        });
 
-    nodeG.transition()
-        .duration(600)
-        .delay(200)
-        .style('opacity', 1);
+    ng.append('rect')
+        .attr('x', -RADIAL_NODE_W / 2).attr('y', -RADIAL_NODE_H / 2)
+        .attr('width', RADIAL_NODE_W).attr('height', RADIAL_NODE_H)
+        .attr('rx', 10).attr('fill', 'rgba(0,212,255,0.08)')
+        .attr('stroke', 'rgba(0,212,255,0.3)').attr('stroke-width', 1.5);
 
-    nodeG.append('rect')
-        .attr('width', TREE_NODE_W)
-        .attr('height', TREE_NODE_H)
-        .attr('rx', 10)
-        .attr('fill', 'rgba(0,212,255,0.08)')
-        .attr('stroke', 'rgba(0,212,255,0.3)')
-        .attr('stroke-width', 1.5);
+    const badge = ng.append('g').attr('transform', `translate(${-RADIAL_NODE_W / 2 + 10}, ${-RADIAL_NODE_H / 2 + 10})`);
+    badge.append('rect').attr('width', 52).attr('height', 16).attr('rx', 4).attr('fill', 'rgba(0,212,255,0.15)');
+    badge.append('text').attr('x', 6).attr('y', 12).attr('fill', '#00d4ff')
+        .attr('font-size', '9px').attr('font-weight', '600')
+        .attr('font-family', 'Inter, sans-serif').text('PAPER');
 
-    const badge = nodeG.append('g').attr('transform', 'translate(12, 12)');
-    badge.append('rect')
-        .attr('width', 52)
-        .attr('height', 16)
-        .attr('rx', 4)
-        .attr('fill', 'rgba(0,212,255,0.15)');
-    badge.append('text')
-        .attr('x', 6)
-        .attr('y', 12)
-        .attr('fill', '#00d4ff')
-        .attr('font-size', '9px')
-        .attr('font-weight', '600')
+    ng.append('text').attr('text-anchor', 'middle').attr('y', 4)
+        .attr('fill', '#f1f5f9').attr('font-size', '13px').attr('font-weight', '500')
         .attr('font-family', 'Inter, sans-serif')
-        .attr('letter-spacing', '0.5px')
-        .text('PAPER');
+        .text(nodeData.title.length > 36 ? nodeData.title.slice(0, 36) + '\u2026' : nodeData.title);
 
-    nodeG.append('text')
-        .attr('x', TREE_NODE_W / 2)
-        .attr('y', 44)
-        .attr('text-anchor', 'middle')
-        .attr('fill', '#f1f5f9')
-        .attr('font-size', '13px')
-        .attr('font-weight', '500')
-        .attr('font-family', 'Inter, sans-serif')
-        .style('pointer-events', 'none')
-        .text(nodeData.title.length > 38 ? nodeData.title.slice(0, 38) + '…' : nodeData.title);
+    const status = nodeData.status || 'found';
+    let st = '', sc = '#475569';
+    if (status === 'downloaded') { st = '\u2713 PDF'; sc = '#34d399'; }
+    else if (status === 'paywalled') { st = '\uD83D\uDD12 Paywalled'; sc = '#fbbf24'; }
+    else if (status === 'not_found') { st = '\u2717 Not Found'; sc = '#f87171'; }
+    if (st) {
+        ng.append('text').attr('x', -RADIAL_NODE_W / 2 + 10).attr('y', RADIAL_NODE_H / 2 - 8)
+            .attr('fill', sc).attr('font-size', '9px').attr('font-weight', '600')
+            .attr('font-family', 'Inter, sans-serif').text(st);
+    }
 
-    const meta = nodeG.append('text')
-        .attr('x', TREE_NODE_W / 2)
-        .attr('y', 60)
-        .attr('text-anchor', 'middle')
-        .attr('fill', '#475569')
-        .attr('font-size', '10px')
-        .attr('font-family', 'Inter, sans-serif')
-        .style('pointer-events', 'none');
+    svg.call(zoom.transform, d3.zoomIdentity.translate(cx, cy).scale(0.6));
+}
+
+function renderRadialNodeContent(el, d) {
+    const nodeData = d.data;
+    const isRoot = d.depth === 0;
+    const hasChildren = nodeData.children && nodeData.children.length > 0;
+    const status = nodeData.status || 'found';
+
+    const nodeW = isRoot ? RADIAL_NODE_W : RADIAL_NODE_W - 16;
+    const nodeH = isRoot ? RADIAL_NODE_H : RADIAL_NODE_H - 8;
+    const opacity = status === 'paywalled' ? 0.5 : status === 'not_found' ? 0.3 : 1;
+
+    let stroke = 'rgba(255,255,255,0.1)';
+    let bg = 'rgba(255,255,255,0.04)';
+    if (isRoot) { stroke = 'rgba(0,212,255,0.3)'; bg = 'rgba(0,212,255,0.08)'; }
+    else if (hasChildren) { stroke = 'rgba(96,165,250,0.2)'; }
+    else { stroke = 'rgba(52,211,153,0.15)'; }
+
+    const inner = el.append('g').attr('class', 'd3-node-inner')
+        .attr('transform', `translate(${-nodeW / 2}, ${-nodeH / 2})`);
+
+    inner.append('rect').attr('width', nodeW).attr('height', nodeH)
+        .attr('rx', 8).attr('fill', bg).attr('stroke', stroke)
+        .attr('stroke-width', 1.5).style('opacity', opacity);
+
+    if (status === 'downloaded') {
+        inner.append('rect').attr('width', nodeW).attr('height', nodeH)
+            .attr('rx', 8).attr('fill', 'none')
+            .attr('stroke', 'rgba(52,211,153,0.3)').attr('stroke-width', 1.5);
+    }
+
+    let badgeText = 'REF', badgeBg = 'rgba(52,211,153,0.15)', badgeFg = '#34d399';
+    if (isRoot) { badgeText = 'PAPER'; badgeBg = 'rgba(0,212,255,0.15)'; badgeFg = '#00d4ff'; }
+    else if (hasChildren) { badgeText = 'BRANCH'; badgeBg = 'rgba(96,165,250,0.12)'; badgeFg = '#60a5fa'; }
+
+    const badge = inner.append('g').attr('transform', 'translate(8, 8)');
+    badge.append('rect').attr('width', badgeText.length * 6.5 + 10).attr('height', 14)
+        .attr('rx', 4).attr('fill', badgeBg);
+    badge.append('text').attr('x', 5).attr('y', 11).attr('fill', badgeFg)
+        .attr('font-size', '8px').attr('font-weight', '600')
+        .attr('font-family', 'Inter, sans-serif').text(badgeText);
+
+    const title = nodeData.title || 'Untitled';
+    const maxChars = isRoot ? 28 : 24;
+    inner.append('text').attr('x', nodeW / 2).attr('y', 36)
+        .attr('text-anchor', 'middle').attr('fill', '#f1f5f9')
+        .attr('font-size', isRoot ? '11px' : '10px').attr('font-weight', '500')
+        .attr('font-family', 'Inter, sans-serif').style('pointer-events', 'none')
+        .text(title.length > maxChars ? title.slice(0, maxChars) + '\u2026' : title);
 
     let metaStr = '';
     if (nodeData.year) metaStr += nodeData.year;
     if (nodeData.authors && nodeData.authors.length > 0) {
-        if (metaStr) metaStr += ' · ';
+        if (metaStr) metaStr += ' \u00B7 ';
         metaStr += nodeData.authors.slice(0, 2).join(', ');
     }
-    meta.text(metaStr.length > 45 ? metaStr.slice(0, 45) + '…' : metaStr);
+    if (metaStr.length > 34) metaStr = metaStr.slice(0, 34) + '\u2026';
+    inner.append('text').attr('x', nodeW / 2).attr('y', 50)
+        .attr('text-anchor', 'middle').attr('fill', '#475569')
+        .attr('font-size', '8px').attr('font-family', 'Inter, sans-serif')
+        .style('pointer-events', 'none').text(metaStr);
 
-    const status = nodeData.status || 'found';
-    let statusText = '';
-    let statusColor = '#475569';
-    if (status === 'downloaded') { statusText = '✓ PDF'; statusColor = '#34d399'; }
-    else if (status === 'paywalled') { statusText = '🔒 Paywalled'; statusColor = '#fbbf24'; }
-    else if (status === 'not_found') { statusText = '✗ Not Found'; statusColor = '#f87171'; }
-
-    if (statusText) {
-        nodeG.append('text')
-            .attr('x', 12)
-            .attr('y', TREE_NODE_H - 14)
-            .attr('fill', statusColor)
-            .attr('font-size', '9px')
-            .attr('font-weight', '600')
-            .attr('font-family', 'Inter, sans-serif')
-            .style('pointer-events', 'none')
-            .text(statusText);
+    let st = '', sc = '#475569';
+    if (status === 'downloaded') { st = '\u2713 PDF'; sc = '#34d399'; }
+    else if (status === 'paywalled') { st = '\uD83D\uDD12 PW'; sc = '#fbbf24'; }
+    else if (status === 'not_found') { st = '\u2717 NF'; sc = '#f87171'; }
+    else if (status === 'found') { st = '\u25C9'; sc = '#60a5fa'; }
+    if (st) {
+        inner.append('text').attr('x', 8).attr('y', nodeH - 8)
+            .attr('fill', sc).attr('font-size', '8px').attr('font-weight', '600')
+            .attr('font-family', 'Inter, sans-serif').style('pointer-events', 'none').text(st);
     }
 
-    g.attr('transform', `translate(${containerW / 2}, ${containerH / 2})`);
+    if (hasChildren) {
+        inner.append('text').attr('x', nodeW - 8).attr('y', nodeH - 8)
+            .attr('text-anchor', 'end').attr('fill', '#475569').attr('font-size', '8px')
+            .attr('font-family', 'JetBrains Mono, monospace').style('pointer-events', 'none')
+            .text(`${nodeData.children.length} refs`);
+    }
 
-    const padScale = 0.8;
-    svg.call(zoom.transform, d3.zoomIdentity
-        .translate(containerW / 2, containerH / 2)
-        .scale(padScale)
-        .translate(-x, -y));
+    d._nw = nodeW;
+    d._nh = nodeH;
 }
 
-function fitToScreen(svg, zoom, treeWidth, treeHeight, containerW, containerH, offsetX, offsetY) {
-    const padScale = 0.85;
-    const scaleX = containerW / (treeWidth + 100);
-    const scaleY = containerH / (treeHeight + 100);
-    const scale = Math.min(scaleX, scaleY, 1) * padScale;
+// ─── Semantic Zoom — Visibility & Clusters ───────────────────────────
 
-    const tx = containerW / 2 - offsetX * scale;
-    const ty = containerH / 2 - offsetY * scale;
+function onZoomTransform(scale) {
+    if (!cachedAllNodes.length || !cachedNodeGroup) return;
 
-    svg.transition()
-        .duration(800)
-        .call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+    const levelId = getZoomLevel(scale);
+    if (levelId === cachedZoomLevelId) return;
+    cachedZoomLevelId = levelId;
+
+    const level = getZoomLevelInfo(levelId);
+    const maxDepth = level.maxDepth;
+
+    // Update zoom level indicator
+    const label = level.label;
+    let indicator = treeContainer.querySelector('.zoom-level-indicator');
+    if (!indicator) {
+        indicator = document.createElement('div');
+        indicator.className = 'zoom-level-indicator';
+        treeContainer.appendChild(indicator);
+    }
+    indicator.textContent = label;
+
+    // Show/hide nodes by depth
+    cachedNodeGroup.selectAll('g.d3-node-group')
+        .style('display', d => (d.depth <= maxDepth) ? null : 'none');
+
+    // Update clusters (donut badges on parents with hidden children)
+    cachedNodeGroup.selectAll('g.d3-node-group')
+        .each(function(d) {
+            const el = d3.select(this);
+            if (d.depth > maxDepth) return;
+            el.select('.d3-cluster').remove();
+
+            if (d.depth >= maxDepth) {
+                const kids = d.data.children || [];
+                const hideKids = kids.filter(k => (d.depth + 1) > maxDepth);
+                if (hideKids.length === 0) return;
+
+                let dl = 0, pw = 0, nf = 0, fd = 0;
+                hideKids.forEach(c => {
+                    const s = c.status || 'found';
+                    if (s === 'downloaded') dl++; else if (s === 'paywalled') pw++;
+                    else if (s === 'not_found') nf++; else fd++;
+                });
+                const total = hideKids.length;
+
+                const slices = [];
+                if (dl > 0) slices.push({ v: dl, c: STATUS_COLORS.downloaded });
+                if (pw > 0) slices.push({ v: pw, c: STATUS_COLORS.paywalled });
+                if (nf > 0) slices.push({ v: nf, c: STATUS_COLORS.not_found });
+                if (fd > 0) slices.push({ v: fd, c: STATUS_COLORS.found });
+
+                const cg = el.append('g').attr('class', 'd3-cluster')
+                    .attr('transform', `translate(${d._nw / 2 + 14}, ${-d._nh / 2 + 12})`)
+                    .style('cursor', 'pointer')
+                    .on('click', function(event) {
+                        event.stopPropagation();
+                        const svg = d3.select(treeContainer).select('svg');
+                        const z = currentZoom;
+                        if (svg.node() && z) {
+                            svg.transition().duration(400).call(z.scaleBy, 2.2);
+                        }
+                    });
+
+                const arc = d3.arc().innerRadius(CLUSTER_INNER_R).outerRadius(CLUSTER_OUTER_R);
+                let curAngle = -Math.PI / 2;
+                slices.forEach(s => {
+                    const a = (s.v / total) * 2 * Math.PI;
+                    cg.append('path').attr('d', arc({ startAngle: curAngle, endAngle: curAngle + a }))
+                        .attr('fill', s.c).attr('stroke', 'rgba(6,10,13,0.6)').attr('stroke-width', 1);
+                    curAngle += a;
+                });
+                if (slices.length === 0) {
+                    cg.append('circle').attr('r', CLUSTER_OUTER_R)
+                        .attr('fill', 'none').attr('stroke', 'rgba(255,255,255,0.1)').attr('stroke-width', 2);
+                }
+
+                cg.append('text').attr('text-anchor', 'middle').attr('dy', '0.35em')
+                    .attr('fill', '#f1f5f9').attr('font-size', '10px').attr('font-weight', '700')
+                    .attr('font-family', 'JetBrains Mono, monospace').text(total);
+            }
+        });
+
+    // Dim links to/from hidden nodes
+    if (cachedLinkGroup) {
+        cachedLinkGroup.selectAll('path')
+            .style('opacity', d => {
+                const s = d.source.depth, t = d.target.depth;
+                return (s <= maxDepth && t <= maxDepth) ? 1 : 0.06;
+            });
+    }
 }
 
 // ─── PDF Viewer (Chrome-style) ──────────────────────────────────────
@@ -814,7 +814,7 @@ treeZoomIn.addEventListener('click', () => {
     const svg = getTreeSvg();
     const zoom = getTreeZoom();
     if (svg.node() && zoom) {
-        svg.transition().duration(300).call(zoom.scaleBy, 1.3);
+        svg.transition().duration(300).call(zoom.scaleBy, 1.4);
     }
 });
 
@@ -830,7 +830,11 @@ treeFit.addEventListener('click', () => {
     const svg = getTreeSvg();
     const zoom = getTreeZoom();
     if (svg.node() && zoom) {
-        svg.transition().duration(500).call(zoom.transform, d3.zoomIdentity);
+        svg.transition().duration(500)
+            .call(zoom.transform, d3.zoomIdentity
+                .translate(cachedCenterX, cachedCenterY)
+                .scale(0.7)
+                .translate(-cachedCenterX, -cachedCenterY));
     }
 });
 
@@ -844,15 +848,19 @@ document.addEventListener('keydown', (e) => {
 
     if (e.key === '+' || e.key === '=') {
         e.preventDefault();
-        svg.transition().duration(300).call(zoom.scaleBy, 1.3);
+        svg.transition().duration(300).call(zoom.scaleBy, 1.4);
     }
     if (e.key === '-') {
         e.preventDefault();
         svg.transition().duration(300).call(zoom.scaleBy, 0.7);
     }
-    if (e.key === 'f' || e.key === 'F') {
+    if (e.key === 'r' || e.key === 'R') {
         e.preventDefault();
-        svg.transition().duration(500).call(zoom.transform, d3.zoomIdentity);
+        svg.transition().duration(500)
+            .call(zoom.transform, d3.zoomIdentity
+                .translate(cachedCenterX, cachedCenterY)
+                .scale(0.7)
+                .translate(-cachedCenterX, -cachedCenterY));
     }
 });
 
