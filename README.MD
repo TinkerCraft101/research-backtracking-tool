@@ -26,8 +26,15 @@ The README is incomplete as the repository is still in building phase.
 
 
 ## TODO
-- [ ] tool to parse the paper and collect research papers
-- [ ] display them in tree structure
-- [ ] add clickable pdf viewer
-- [ ] building a loging section
-- [ ] configuration popup
+- [x] tool to parse the paper and collect research papers
+- [x] display them in tree structure
+- [x] add clickable pdf viewer
+- [ ] move the stroage to supabase
+- [ ] build a working page and publish the app [v0.1.0]
+- [ ] add stop button
+- [ ] build parsing frame - decide how much papers to trace and display, add modes (quick, full sweep)
+
+
+## Bugs
+- [ ] no limiter for parsing - root -> 40 brach -> 200 leaves
+- [ ] fix UI styling
