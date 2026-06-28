@@ -48,10 +48,12 @@ const pdfZoomLevel = $('#pdf-zoom-level');
 
 // ─── State ───────────────────────────────────────────────────────────
 let currentTreeData = null;
+let currentEventSource = null;
 let pdfDoc = null;
 let pdfPagesData = [];
 let currentScale = 1.0;
 let currentPdfUrl = '';
+
 
 // ─── Depth Setting ──────────────────────────────────────────────────
 let treeDepth = 2;
@@ -125,6 +127,9 @@ async function uploadFile(file) {
         const data = await resp.json();
         processingTitle.textContent = truncate(data.paper_title, 60);
         progressStats.textContent = `0 / ${data.total_references}`;
+        stopBtn.dataset.jobId = data.job_id;
+        stopBtn.disabled = false;
+        stopBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg> Stop';
 
         if (data.total_references === 0) {
             progressMessage.textContent = 'No references found in this paper.';
@@ -141,7 +146,9 @@ async function uploadFile(file) {
 
 // ─── Progress Tracking (SSE) ─────────────────────────────────────────
 function trackProgress(jobId) {
+    if (currentEventSource) { currentEventSource.close(); currentEventSource = null; }
     const evtSource = new EventSource(`/api/progress/${jobId}`);
+    currentEventSource = evtSource;
 
     evtSource.onmessage = (event) => {
         const data = JSON.parse(event.data);
@@ -153,13 +160,16 @@ function trackProgress(jobId) {
 
         if (data.status === 'done') {
             evtSource.close();
+            currentEventSource = null;
             currentTreeData = data.tree_data;
             setTimeout(() => {
                 renderTree(data.tree_data);
                 showScreen(treeScreen);
+                activateLegend();
             }, 600);
-        } else if (data.status === 'error') {
+        } else if (data.status === 'error' || data.status === 'cancelled') {
             evtSource.close();
+            currentEventSource = null;
             progressMessage.textContent = data.message || 'An error occurred';
             setTimeout(() => showScreen(uploadScreen), 3000);
         }
@@ -167,10 +177,31 @@ function trackProgress(jobId) {
 
     evtSource.onerror = () => {
         evtSource.close();
+        currentEventSource = null;
         progressMessage.textContent = 'Connection lost. Please try again.';
         setTimeout(() => showScreen(uploadScreen), 3000);
     };
 }
+
+// ─── Stop Button ──────────────────────────────────────────────────────
+const stopBtn = $('#stop-btn');
+
+stopBtn.addEventListener('click', async () => {
+    stopBtn.disabled = true;
+    stopBtn.textContent = 'Stopping...';
+    try {
+        if (currentEventSource) {
+            currentEventSource.close();
+            currentEventSource = null;
+        }
+        // Derive job_id from the URL we're tracking - stored via closure
+        await fetch(`/api/cancel/${stopBtn.dataset.jobId}`, { method: 'POST' });
+    } catch (e) {
+        // Ignore errors on cancel
+    }
+    stopRequested = true;
+    showScreen(uploadScreen);
+});
 
 // ─── Tree Rendering (D3.js) — Radial + Semantic Zoom + Clusters ─────
 
@@ -189,10 +220,10 @@ let cachedCenterX = 0;
 let cachedCenterY = 0;
 
 const ZOOM_LEVELS = [
-    { maxScale: 0.3,  maxDepth: 0, label: 'Continent' },
-    { maxScale: 0.7,  maxDepth: 1, label: 'Country' },
-    { maxScale: 1.5,  maxDepth: 2, label: 'City' },
-    { maxScale: Infinity, maxDepth: Infinity, label: 'Street' },
+    { maxScale: 0.3,  maxDepth: 0, label: '' },
+    { maxScale: 0.7,  maxDepth: 1, label: '' },
+    { maxScale: 1.5,  maxDepth: 2, label: '' },
+    { maxScale: Infinity, maxDepth: Infinity, label: '' },
 ];
 
 const STATUS_COLORS = {
@@ -794,6 +825,8 @@ backBtn.addEventListener('click', () => {
     currentTreeData = null;
     treeContainer.innerHTML = '';
     fileInput.value = '';
+    stopBtn.disabled = false;
+    stopBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg> Stop';
     showScreen(uploadScreen);
 });
 
@@ -878,6 +911,27 @@ window.addEventListener('resize', () => {
         }
     }, 250);
 });
+
+// ─── Legend Auto-Fade & Hover ─────────────────────────────────────────
+function activateLegend() {
+    const container = $('#legend-container');
+    const legendBox = $('#legend-box');
+    const hoverIcon = $('#legend-hover-icon');
+
+    if (!container || !legendBox || !hoverIcon) return;
+
+    container.classList.remove('has-faded');
+    legendBox.classList.remove('fade-out');
+    hoverIcon.classList.remove('show');
+
+    setTimeout(() => {
+        legendBox.classList.add('fade-out');
+        setTimeout(() => {
+            hoverIcon.classList.add('show');
+            container.classList.add('has-faded');
+        }, 600);
+    }, 3000);
+}
 
 // ─── Utilities ───────────────────────────────────────────────────────
 function escHtml(str) {

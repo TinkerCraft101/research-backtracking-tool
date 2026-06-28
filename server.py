@@ -480,6 +480,7 @@ async def process_node(
                         sub_refs = extract_references(text)
                         if sub_refs:
                             sub_refs = sub_refs[:4]
+                            job["total"] += len(sub_refs)
                             sub_children = await process_node(
                                 job_id, sub_refs, depth + 1, max_depth,
                                 root_name, client
@@ -637,6 +638,19 @@ async def upload_paper(
         "total_references": len(references),
         "depth": depth,
     }
+
+
+@app.post("/api/cancel/{job_id}")
+async def cancel_job(job_id: str):
+    """Cancel a running job."""
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = jobs[job_id]
+    if job["status"] in ("done", "error", "cancelled"):
+        raise HTTPException(status_code=400, detail="Job is already finished or cancelled")
+    job["status"] = "cancelled"
+    job["message"] = "Cancelled by user"
+    return {"status": "cancelled"}
 
 
 @app.get("/api/progress/{job_id}")
